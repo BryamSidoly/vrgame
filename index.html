@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,shrink-to-fit=no" />
+  <title>Mixed Reality + VR Estéreo (single-canvas)</title>
+  <style>
+    html,body{height:100%;margin:0;background:#000;overflow:hidden}
+    #ui{position:fixed;left:12px;top:12px;z-index:20;color:#fff;font-family:system-ui,Arial}
+    button{font-size:16px;padding:8px 12px;margin:6px}
+    #score{font-weight:700;margin-left:8px}
+    video#cam{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;z-index:0}
+    canvas#vr-canvas{position:fixed;inset:0;width:100%;height:100%;z-index:2;pointer-events:auto}
+    .hint{opacity:.9;font-size:13px;margin-top:6px}
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <button id="start-stereo">VR Estéreo</button>
+    <button id="start-fallback">Somente Câmera</button>
+    <div class="hint">Toque para atirar (toque esquerda/direita)</div>
+    <div class="hint">Placar: <span id="score">0</span></div>
+    <div class="hint" id="notes"></div>
+  </div>
+
+  <video id="cam" autoplay playsinline muted></video>
+  <canvas id="vr-canvas"></canvas>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.min.js"></script>
+
+  <script>
+  /****************************************************************
+   * Single-canvas stereoscopic renderer for Cardboard-like VR
+   * - 1 WebGLRenderer
+   * - 1 canvas
+   * - two viewports (left / right)
+   * - camera video as background (getUserMedia)
+   * - touch->raycast mapping per-viewport
+   ****************************************************************/
+
+  const notes = document.getElementById('notes');
+  const scoreEl = document.getElementById('score');
+  const video = document.getElementById('cam');
+  const canvas = document.getElementById('vr-canvas');
+  const startStereoBtn = document.getElementById('start-stereo');
+  const startFallbackBtn = document.getElementById('start-fallback');
+
+  let renderer, scene, cameraL, cameraR;
+  let W = window.innerWidth, H = window.innerHeight;
+  let dpr = Math.min(window.devicePixelRatio || 1, 2);
+  let score = 0;
+  const IPD = 0.065; // ajustar se necessário
+
+  // start camera feed for background
+  async function startCamera(){
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      notes.innerText = 'Câmera ativa.';
+      return true;
+    }catch(err){
+      notes.innerText = 'Erro ao acessar câmera: ' + (err && err.message ? err.message : err);
+      return false;
+    }
+  }
+
+  function initThree(){
+    renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    renderer.setClearColor(0x000000, 0); // transparent so video shows
+    renderer.setPixelRatio(dpr);
+    renderer.setSize(W, H, false);
+
+    scene = new THREE.Scene();
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x666666, 1.0);
+    scene.add(hemi);
+
+    // ambient fill
+    scene.add(new THREE.AmbientLight(0xffffff, 0.2));
+
+    // small set of targets (examples)
+    for(let i=0;i<6;i++){
+      const m = new THREE.Mesh(
+        new THREE.SphereGeometry(0.06, 16, 12),
+        new THREE.MeshStandardMaterial({ color: 0xff6b6b, metalness:0.2, roughness:0.6 })
+      );
+      m.position.set((Math.random()-0.5)*1.2, (Math.random()-0.3)*0.5, -0.8 - Math.random()*1.2);
+      m.userData.floatSpeed = 0.002 + Math.random()*0.004;
+      scene.add(m);
+    }
+  }
+
+  function setupCameras(){
+    const fov = 70;
+    cameraL = new THREE.PerspectiveCamera(fov, (W/2) / H, 0.01, 50);
+    cameraR = new THREE.PerspectiveCamera(fov, (W/2) / H, 0.01, 50);
+
+    cameraL.position.set(-IPD/2, 0, 0);
+    cameraR.position.set(IPD/2, 0, 0);
+
+    const center = new THREE.Vector3(0,0,-1);
+    cameraL.lookAt(center);
+    cameraR.lookAt(center);
+  }
+
+  function resizeAll(){
+    W = window.innerWidth;
+    H = window.innerHeight;
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+    renderer.setPixelRatio(dpr);
+    renderer.setSize(W, H, false);
+
+    // update projection aspect for each half
+    cameraL.aspect = (W/2) / H;
+    cameraR.aspect = (W/2) / H;
+    cameraL.updateProjectionMatrix();
+    cameraR.updateProjectionMatrix();
+  }
+
+  function animate(){
+    // float targets
+    const t = performance.now();
+    scene.traverse((o)=>{
+      if(o.userData && o.userData.floatSpeed){
+        o.position.y += Math.sin(t * o.userData.floatSpeed) * 0.0007;
+      }
+    });
+
+    // left viewport
+    renderer.setViewport(0, 0, Math.floor(W/2), Math.floor(H));
+    renderer.setScissor(0, 0, Math.floor(W/2), Math.floor(H));
+    renderer.setScissorTest(true);
+    renderer.render(scene, cameraL);
+
+    // right viewport
+    renderer.setViewport(Math.floor(W/2), 0, Math.floor(W/2), Math.floor(H));
+    renderer.setScissor(Math.floor(W/2), 0, Math.floor(W/2), Math.floor(H));
+    renderer.setScissorTest(true);
+    renderer.render(scene, cameraR);
+
+    requestAnimationFrame(animate);
+  }
+
+  // mapping a pointer event to NDC relative to the active viewport camera
+  function pointerToNDC(ev, viewportLeft, viewportWidth, viewportHeight){
+    const isTouch = ev.type.startsWith('touch');
+    const clientX = isTouch ? ev.touches[0].clientX : ev.clientX;
+    const clientY = isTouch ? ev.touches[0].clientY : ev.clientY;
+
+    // compute local coords inside viewport
+    const localX = clientX - viewportLeft;
+    const localY = clientY - (window.innerHeight - viewportHeight); // viewportTop = 0 (we use full height)
+
+    // normalized -1..1
+    const ndcX = (localX / viewportWidth) * 2 - 1;
+    const ndcY = - (localY / viewportHeight) * 2 + 1;
+    return { x: ndcX, y: ndcY };
+  }
+
+  // unified pointer handler for single-canvas stereo:
+  // determine which half was touched and raycast using that half's camera
+  function onPointer(ev){
+    ev.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const clientX = ev.type.startsWith('touch') ? ev.touches[0].clientX : ev.clientX;
+    const half = (clientX - rect.left) < (rect.width / 2) ? 'left' : 'right';
+
+    const viewportLeft = half === 'left' ? rect.left : rect.left + rect.width / 2;
+    const viewportWidth = rect.width / 2;
+    const viewportHeight = rect.height;
+
+    const ndc = pointerToNDC(ev, viewportLeft, viewportWidth, viewportHeight);
+    const cam = half === 'left' ? cameraL : cameraR;
+
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera({ x: ndc.x, y: ndc.y }, cam);
+    const hits = ray.intersectObjects(scene.children, true);
+    if(hits.length > 0){
+      const obj = hits[0].object;
+      scene.remove(obj);
+      score++;
+      scoreEl.textContent = score;
+    }
+  }
+
+  // main starter routine that sets everything up and enters fullscreen
+  async function startStereo(){
+    // start camera first (background)
+    const ok = await startCamera();
+    if(!ok) return;
+
+    // request fullscreen to ensure true full viewport (recommended for Cardboard)
+    if(document.documentElement.requestFullscreen){
+      try{ await document.documentElement.requestFullscreen(); }catch(e){ /* ignore */ }
+    }
+
+    initThree();
+    setupCameras();
+    // place renderer after creating cameras so resize uses them
+    setupRendererOnce();
+    window.addEventListener('resize', () => {
+      resizeAll();
+    });
+
+    notes.innerText = 'Modo VR estéreo ativo — coloque no adaptador Cardboard.';
+    animate();
+  }
+
+  // set up renderer & event listeners once
+  function setupRendererOnce(){
+    // if renderer is not yet created (initThree created it)
+    if(!renderer){
+      renderer = new THREE.WebGLRenderer({ canvas, alpha:true, antialias:true });
+      renderer.setClearColor(0x000000, 0);
+    }
+    renderer.setPixelRatio(dpr);
+    renderer.setSize(W, H, false);
+
+    // ensure scissor test is enabled (we enable it every frame too)
+    renderer.setScissorTest(true);
+
+    // attach pointer listeners to canvas (capture both mouse and touch)
+    canvas.addEventListener('mousedown', onPointer, { passive:false });
+    canvas.addEventListener('touchstart', onPointer, { passive:false });
+  }
+
+  // fallback: only start camera (no stereo)
+  async function startFallback(){
+    await startCamera();
+    notes.innerText = 'Modo câmera (fallback). Para VR, clique em VR Estéreo.';
+  }
+
+  // attach buttons
+  startStereoBtn.addEventListener('click', startStereo);
+  startFallbackBtn.addEventListener('click', startFallback);
+
+  // init minimal camera/canvas placeholders so UI looks responsive even before pressing buttons
+  (function preloadSetup(){
+    W = window.innerWidth; H = window.innerHeight;
+    // create a tiny scene so a preview can be visible if wanted
+    scene = new THREE.Scene();
+    const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
+    scene.add(light);
+    // create renderer object so canvas has a GL context (deferred until user starts heavy part)
+    try{
+      renderer = new THREE.WebGLRenderer({ canvas, alpha:true, antialias:true });
+      renderer.setClearColor(0x000000, 0);
+      renderer.setPixelRatio(dpr);
+      renderer.setSize(W, H, false);
+    }catch(e){
+      // ignore if cannot create early context
+    }
+  })();
+
+  </script>
+</body>
+</html>
