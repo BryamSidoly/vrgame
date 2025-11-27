@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>Cardboard AR/VR — Demo</title>
+<style>
+  html,body{height:100%;margin:0;background:#000;color:#fff;font-family:Inter,system-ui, -apple-system, "Segoe UI", Roboto, Arial;overflow:hidden}
+  #ui {
+    position:fixed; left:12px; top:12px; z-index:50; display:flex; gap:8px; align-items:center;
+    background: rgba(0,0,0,0.25); padding:8px; border-radius:10px;
+  }
+  button{font-size:14px;padding:8px 10px;border:0;border-radius:8px;background:#1e88e5;color:white;cursor:pointer}
+  button.secondary{background:#455a64}
+  #overlay {
+    position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    z-index:40; background: linear-gradient(180deg, rgba(0,0,0,0.85), rgba(0,0,0,0.6)); gap:12px;
+    flex-direction:column; padding:20px; box-sizing:border-box;
+  }
+  #canvas{width:100%;height:100%;display:block}
+  #hud { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%); pointer-events:none; z-index:60; }
+  .reticle { width:28px;height:28px;border-radius:50%;border:2px solid rgba(255,255,255,0.9); display:flex;align-items:center;justify-content:center; background: rgba(0,0,0,0.12); transition: transform .12s, background .12s;}
+  .reticle .dot { width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.9); transition: transform .12s; }
+  .reticle.gazing { transform: scale(.9); background: rgba(30,136,229,0.14); }
+  #msg { position: fixed; left: 12px; bottom: 12px; color: #ddd; font-size:13px; z-index:70; background: rgba(0,0,0,0.35); padding:8px 10px; border-radius:8px; }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <button id="btn-vr">Entrar VR</button>
+  <button id="btn-ar" class="secondary">Entrar AR</button>
+  <button id="btn-exit" class="secondary">Sair</button>
+  <div style="color:#cfd8dc;font-size:13px;padding-left:8px">IPD:<span id="ipdLabel">64mm</span></div>
+</div>
+
+<div id="overlay">
+  <h1 style="margin:0">Cardboard AR / VR Demo</h1>
+  <p style="max-width:420px;text-align:center;margin:0">Use o botão VR para entrar em ambiente virtual ou AR para usar a câmera como fundo. Insira o celular no adaptador Cardboard para ver em estéreo.</p>
+  <div style="display:flex;gap:8px;margin-top:12px">
+    <button id="start-vr">Iniciar VR</button>
+    <button id="start-ar">Iniciar AR</button>
+  </div>
+  <small style="margin-top:8px;color:#cfd8dc">No iOS, permita movimento/sensor e câmera após tocar.</small>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<div id="hud"><div class="reticle" id="reticle"><div class="dot"></div></div></div>
+<div id="msg">Aguardando</div>
+
+<script type="module">
+import * as THREE from "https://unpkg.com/three@0.159.0/build/three.module.js";
+
+/*
+Main features:
+- VR mode: virtual scene (sky + lights) rendered stereoscopically
+- AR mode: camera video used as scene.background, objects anchored in world
+- Stereo split rendering (left/right), IPD adjustable
+- Fullscreen + orientation lock attempted
+- Gaze interaction + tap fallback
+*/
+
+const canvas = document.getElementById('canvas');
+const overlay = document.getElementById('overlay');
+const msg = document.getElementById('msg');
+const reticleEl = document.getElementById('reticle');
+const ipdLabel = document.getElementById('ipdLabel');
+
+const btnVr = document.getElementById('btn-vr');
+const btnAr = document.getElementById('btn-ar');
+const btnExit = document.getElementById('btn-exit');
+const startVr = document.getElementById('start-vr');
+const startAr = document.getElementById('start-ar');
+
+let renderer, scene, camL, camR, controls, video, videoTexture;
+let cube, ground;
+let ipd = 0.064; // meters
+let fov = 75;
+let isRunning = false;
+let currentMode = null; // "VR" | "AR"
+let raycaster = new THREE.Raycaster();
+let gazeTimer = 0, gazing = false, lastGazeTime = 0;
+let lastTime = performance.now();
+
+// setup renderer & scene
+function prepareCore() {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.autoClear = true;
+  scene = new THREE.Scene();
+
+  const aspect = (window.innerWidth / 2) / window.innerHeight;
+  camL = new THREE.PerspectiveCamera(fov, aspect, 0.01, 100);
+  camR = new THREE.PerspectiveCamera(fov, aspect, 0.01, 100);
+  camL.position.set(-ipd/2,0,0);
+  camR.position.set(ipd/2,0,0);
+
+  // simple test object (replace with GLTF/FBX later)
+  const boxGeo = new THREE.BoxGeometry(0.3,0.3,0.3);
+  const boxMat = new THREE.MeshStandardMaterial({ metalness:0.1, roughness:0.6 });
+  cube = new THREE.Mesh(boxGeo, boxMat);
+  cube.position.set(0, 0, -2);
+  scene.add(cube);
+
+  // ground for VR teleportation/visual reference
+  const gGeo = new THREE.PlaneGeometry(40,40);
+  const gMat = new THREE.MeshStandardMaterial({ color:0x222222, roughness:1, metalness:0 });
+  ground = new THREE.Mesh(gGeo, gMat);
+  ground.rotation.x = -Math.PI/2;
+  ground.position.y = -1.5;
+  ground.visible = true;
+  scene.add(ground);
+
+  // lights for VR
+  const amb = new THREE.AmbientLight(0xffffff, 0.6);
+  const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+  dir.position.set(3,5,2);
+  scene.add(amb, dir);
+
+  // controls uses camL as base — we'll copy orientation to camR
+  controls = new DeviceOrientationControls(camL);
+  window.addEventListener('resize', onResize, { passive:true });
+  onResize();
+}
+
+// Start AR mode (camera background)
+async function startAR() {
+  currentMode = "AR";
+  await startCommon({ useCamera:true, fullscreen:true });
+  msg.textContent = "Modo AR — câmera ativa";
+}
+
+// Start VR mode (virtual environment background)
+async function startVR() {
+  currentMode = "VR";
+  await startCommon({ useCamera:false, fullscreen:true });
+  msg.textContent = "Modo VR — ambiente virtual";
+}
+
+// Common start routine
+async function startCommon({ useCamera = false, fullscreen = true } = {}) {
+  overlay.style.display = 'none';
+  try {
+    if (fullscreen && document.documentElement.requestFullscreen) {
+      await document.documentElement.requestFullscreen();
+    }
+    if (fullscreen && screen.orientation && screen.orientation.lock) {
+      try{ await screen.orientation.lock('landscape-primary'); } catch(e){ try{ await screen.orientation.lock('landscape'); }catch(e){} }
+    }
+  } catch(e) {
+    console.warn('Fullscreen/orientation lock não disponível', e);
+  }
+
+  if (!renderer) prepareCore();
+
+  if (useCamera) {
+    // camera constraints: prefer trasera
+    const constraints = { video: { facingMode: { ideal: "environment" }, width:{ideal:1920}, height:{ideal:1080} }, audio:false };
+    video = document.createElement('video');
+    video.setAttribute('playsinline','');
+    video.muted = true;
+    video.autoplay = true;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = stream;
+      await video.play();
+videoTexture = new THREE.VideoTexture(video);
+      videoTexture.minFilter = THREE.LinearFilter;
+      videoTexture.magFilter = THREE.LinearFilter;
+videoTexture.format = THREE.RGBAFormat;
+      videoTexture.encoding = THREE.sRGBEncoding;
+      scene.background = videoTexture;
+    } catch(err) {
+      alert('Não foi possível acessar a câmera: ' + err.message);
+      console.error(err);
+      overlay.style.display = '';
+      return;
+    }
+  } else {
+    // VR: set a sky-like background
+    const cubeTex = new THREE.Color(0x0b2340);
+    scene.background = cubeTex;
+  }
+
+  isRunning = true;
+  // start render loop tied to video frame if available
+  if (video && 'requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+    video.requestVideoFrameCallback(videoFrameCallback);
+  } else {
+    requestAnimationFrame(rafLoop);
+  }
+}
+
+// video-synced loop
+function videoFrameCallback(now, metadata) {
+  if (!isRunning) return;
+  renderFrame();
+  if (video && 'requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+    try { video.requestVideoFrameCallback(videoFrameCallback); } catch(e){ requestAnimationFrame(rafLoop); }
+  } else requestAnimationFrame(rafLoop);
+}
+function rafLoop(t) { if (!isRunning) return; renderFrame(); requestAnimationFrame(rafLoop); }
+
+function renderFrame() {
+  const now = performance.now();
+  const dt = now - lastTime;
+  lastTime = now;
+
+  controls.update();
+  camR.quaternion.copy(camL.quaternion);
+  camL.position.set(-ipd/2,0,0);
+  camR.position.set(ipd/2,0,0);
+
+  cube.rotation.x += 0.01;
+  cube.rotation.y += 0.02;
+
+  // gaze update (center of screen with camL)
+  updateGaze(dt);
+
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setScissorTest(true);
+
+  // left eye
+  renderer.setViewport(0, 0, Math.floor(w/2), h);
+  renderer.setScissor(0, 0, Math.floor(w/2), h);
+  renderer.render(scene, camL);
+
+  // right eye
+  renderer.setViewport(Math.ceil(w/2), 0, Math.floor(w/2), h);
+  renderer.setScissor(Math.ceil(w/2), 0, Math.floor(w/2), h);
+  renderer.render(scene, camR);
+
+  renderer.setScissorTest(false);
+}
+
+function updateGaze(dt) {
+  const ndc = new THREE.Vector2(0,0);
+  raycaster.setFromCamera(ndc, camL);
+  const intersects = raycaster.intersectObject(cube, false);
+  if (intersects.length > 0) {
+    gazeTimer += dt;
+    if (!gazing) { gazing = true; reticleEl.classList.add('gazing'); }
+    if (gazeTimer > 1000 && (Date.now() - lastGazeTime > 1200)) {
+      lastGazeTime = Date.now();
+      onGazeActivate(intersects[0].object);
+    }
+  } else {
+    gazeTimer = Math.max(0, gazeTimer - dt * 0.6);
+    if (gazing) { gazing = false; reticleEl.classList.remove('gazing'); }
+  }
+  const p = Math.min(1, gazeTimer / 1000);
+  const dot = reticleEl.querySelector('.dot');
+  dot.style.transform = `scale(${1 + p*0.9})`;
+}
+
+function onGazeActivate(obj) {
+  obj.scale.multiplyScalar(1.06);
+  setTimeout(()=> obj.scale.set(1,1,1), 220);
+  if (obj.material && obj.material.color) obj.material.color.setHex(Math.random()*0xffffff);
+  setMsg('Objeto ativado por gaze!');
+}
+
+function setMsg(t) { msg.textContent = t; }
+
+function stopAll() {
+  isRunning = false;
+  if (video && video.srcObject) {
+    const tracks = video.srcObject.getTracks();
+    tracks.forEach(t=>t.stop());
+    video.srcObject = null;
+  }
+  // exit fullscreen if possible
+  try { if (document.fullscreenElement) document.exitFullscreen(); } catch(e){}
+  overlay.style.display = '';
+  setMsg('Parado');
+}
+
+// resize handler
+function onResize() {
+  if (!renderer) return;
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h);
+  const aspect = (w/2)/h;
+  camL.aspect = aspect; camR.aspect = aspect;
+  camL.updateProjectionMatrix(); camR.updateProjectionMatrix();
+}
+
+// UI bindings
+startAr.addEventListener('click', () => startAR());
+startVr.addEventListener('click', () => startVR());
+btnAr.addEventListener('click', () => startAR());
+btnVr.addEventListener('click', () => startVR());
+btnExit.addEventListener('click', () => stopAll());
+
+// Tap to interact fallback
+canvas.addEventListener('click', (ev) => {
+  // interpret click as center-tap (gaze click)
+  if (cube) onGazeActivate(cube);
+});
+
+// keyboard debug (IPD / FOV)
+window.addEventListener('keydown', (e) => {
+  if (!camL) return;
+  if (e.key === '[') { ipd = Math.max(0.02, ipd - 0.001); ipdLabel.textContent = Math.round(ipd*1000) + 'mm'; setMsg('IPD ' + Math.round(ipd*1000) + 'mm'); }
+  if (e.key === ']') { ipd = Math.min(0.12, ipd + 0.001); ipdLabel.textContent = Math.round(ipd*1000) + 'mm'; setMsg('IPD ' + Math.round(ipd*1000) + 'mm'); }
+  if (e.key === '-') { fov = Math.max(45, fov - 1); camL.fov = camR.fov = fov; camL.updateProjectionMatrix(); camR.updateProjectionMatrix(); setMsg('FOV ' + Math.round(fov)); }
+  if (e.key === '=') { fov = Math.min(110, fov + 1); camL.fov = camR.fov = fov; camL.updateProjectionMatrix(); camR.updateProjectionMatrix(); setMsg('FOV ' + Math.round(fov)); }
+});
+
+prepareCore();
+setMsg('Pronto. Escolha VR ou AR (overlay)');
+</script>
+</body>
+</html>
