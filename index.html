@@ -1,282 +1,99 @@
 <!doctype html>
 <html lang="pt-BR">
-
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <title>VR Cardboard via GitHub Pages — Mixed Reality Demo</title>
-  <style>
-    html,
-    body {
-      height: 100%;
-      margin: 0;
-      background: #000;
-      color: #fff;
-      font-family: sans-serif
-    }
-
-    #overlay {
-      position: fixed;
-      left: 0;
-      right: 0;
-      top: 0;
-      bottom: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      z-index: 10;
-      backdrop-filter: blur(2px);
-    }
-
-    button {
-      font-size: 18px;
-      padding: 12px 18px;
-      border-radius: 10px;
-      border: none;
-      background: #1e88e5;
-      color: white
-    }
-
-    #hint {
-      margin-top: 12px;
-      opacity: .9;
-      font-size: 14px
-    }
-
-    canvas {
-      display: block;
-      width: 100%;
-      height: 100%;
-    }
-
-    /* simple guide lines for Cardboard alignment */
-    .goggle-line {
-      position: fixed;
-      left: 50%;
-      transform: translateX(-50%);
-      top: 50%;
-      height: 2px;
-      background: rgba(255, 255, 255, .08);
-      width: 100%;
-      z-index: 9;
-    }
-
-    .vertical-split {
-      position: fixed;
-      left: 50%;
-      top: 0;
-      height: 100%;
-      width: 2px;
-      background: rgba(255, 255, 255, .06);
-      z-index: 9;
-      transform: translateX(-1px);
-    }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>VR Cardboard via GitHub Pages — Mixed Reality</title>
+<style>
+  html,body{height:100%;margin:0;background:#000;color:#fff;font-family:sans-serif;overflow:hidden}
+  #overlay{
+    position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    background:rgba(0,0,0,.6);z-index:10;
+  }
+  button{font-size:20px;padding:12px 20px;border:0;border-radius:10px;background:#1e88e5;color:white}
+  #canvas{width:100%;height:100%;display:block}
+</style>
 </head>
-
 <body>
-  <div id="overlay">
-    <h1>VR Cardboard — Mixed Reality Demo</h1>
-    <button id="startBtn">Start VR</button>
-    <div id="hint">Permita câmera traseira e sensores. Use um adaptador tipo Cardboard.</div>
-    <div style="font-size:12px;margin-top:8px;opacity:.8">Se estiver no iOS, aceite a permissão de sensores quando
-      solicitado.</div>
-  </div>
 
-  <div class="goggle-line"></div>
-  <div class="vertical-split"></div>
+<div id="overlay">
+  <h1>VR Demo</h1>
+  <button id="start">Iniciar VR</button>
+  <p>Permita o uso da câmera e sensores ao iniciar.</p>
+</div>
 
-  <!-- Three.js via CDN -->
-  <script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
-  <!-- DeviceOrientationControls (simple implementation) -->
-  <script src="https://unpkg.com/three@0.158.0/examples/js/controls/DeviceOrientationControls.js"></script>
+<canvas id="canvas"></canvas>
 
-  <script>
-    (async function () {
-      const startBtn = document.getElementById('startBtn');
-      const overlay = document.getElementById('overlay');
+<script type="module">
+import * as THREE from "https://unpkg.com/three@0.159.0/build/three.module.js";
+import { DeviceOrientationControls } from "https://unpkg.com/three@0.159.0/examples/jsm/controls/DeviceOrientationControls.js";
 
-      // canvas / renderer
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-      renderer.setPixelRatio(window.devicePixelRatio || 1);
-      document.body.appendChild(renderer.domElement);
+const startBtn = document.getElementById("start");
+const overlay = document.getElementById("overlay");
+const canvas = document.getElementById("canvas");
 
-      // scene & two cameras (left/right)
-      const scene = new THREE.Scene();
+let renderer, scene, camL, camR, controls, video, texture;
 
-      // a simple ambient light and a directional light
-      scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-      const dir = new THREE.DirectionalLight(0xffffff, 0.6);
-      dir.position.set(5, 10, 7);
-      scene.add(dir);
+startBtn.onclick = async () => {
+    overlay.style.display = "none";
 
-      // create a simple object to visualize
-      const geo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
-      const mat = new THREE.MeshStandardMaterial({ color: 0xff9933, metalness: 0.2, roughness: 0.6 });
-      const cube = new THREE.Mesh(geo, mat);
-      cube.position.set(0, 0, -1.5);
-      scene.add(cube);
+    // ====== CAMERA ======
+    video = document.createElement("video");
+    video.setAttribute("playsinline", "");
+    video.muted = true;
 
-      // floor (semi-transparent)
-      const floorGeo = new THREE.PlaneGeometry(5, 5);
-      const floorMat = new THREE.MeshStandardMaterial({ color: 0x222222, transparent: true, opacity: 0.2 });
-      const floor = new THREE.Mesh(floorGeo, floorMat);
-      floor.rotation.x = -Math.PI / 2;
-      floor.position.y = -0.7;
-      scene.add(floor);
+    const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false
+    });
 
-      // two perspective cameras for stereoscopic view
-      const aspect = window.innerWidth / window.innerHeight;
-      const leftCamera = new THREE.PerspectiveCamera(60, aspect, 0.01, 100);
-      const rightCamera = new THREE.PerspectiveCamera(60, aspect, 0.01, 100);
-      // initial IPD (inter-pupillary distance) in meters; adjust if needed
-      const IPD = 0.06;
+    video.srcObject = stream;
+    await video.play();
 
-      leftCamera.position.x = -IPD / 2;
-      rightCamera.position.x = IPD / 2;
-      leftCamera.position.z = 0;
-      rightCamera.position.z = 0;
+    texture = new THREE.VideoTexture(video);
 
-      // device orientation controls - applied to camera parent so both cameras move together
-      const cameraParent = new THREE.Group();
-      cameraParent.add(leftCamera);
-      cameraParent.add(rightCamera);
-      scene.add(cameraParent);
+    // ====== THREE SETUP ======
+    renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(devicePixelRatio);
 
-      const controls = new THREE.DeviceOrientationControls(cameraParent);
+    scene = new THREE.Scene();
 
-      // video texture (camera passthrough)
-      let video = document.createElement('video');
-      video.setAttribute('autoplay', '');
-      video.setAttribute('playsinline', ''); // iOS
-      video.muted = true;
+    const aspect = window.innerWidth / window.innerHeight;
+    camL = new THREE.PerspectiveCamera(70, aspect/2, 0.1, 100);
+    camR = new THREE.PerspectiveCamera(70, aspect/2, 0.1, 100);
 
-      let stream;
+    // IPD (distância dos olhos)
+    camL.position.x = -0.03;
+    camR.position.x =  0.03;
 
-      function onResize() {
-        renderer.setSize(window.innerWidth, window.innerHeight);
-      }
-      window.addEventListener('resize', onResize);
-      onResize();
+    // Controle por sensores
+    controls = new DeviceOrientationControls(camL);  
+    // OBS: Controla só o camL, e depois copiamos a rotação p/ camR
 
-      // Barrel distortion shader (fragment) - simple radial distortion
-      const barrelFragment = `
-    uniform sampler2D map;
-    uniform vec2 lensCenter;
-    uniform float strength;
-    uniform vec2 resolution;
-    varying vec2 vUv;
-    void main(){
-      vec2 uv = vUv;
-      vec2 pos = uv * 2.0 - 1.0; // -1..1
-      pos.x *= resolution.x/resolution.y;
-      float r = length(pos);
-      // distortion factor (simple polynomial)
-      float k = 1.0 + strength * (r*r);
-      vec2 distorted = pos * k;
-      distorted.x /= (resolution.x/resolution.y);
-      vec2 cuv = (distorted + 1.0) * 0.5;
-      vec4 color = texture2D(map, cuv);
-      gl_FragColor = color;
-    }
-  `;
-      const barrelVertex = `
-    varying vec2 vUv;
-    void main(){
-      vUv = uv;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
-    }
-  `;
+    // ====== FUNDO DA CAMERA ======
+    const geo = new THREE.PlaneGeometry(2,2);
+    const mat = new THREE.MeshBasicMaterial({ map: texture });
+    const bg = new THREE.Mesh(geo, mat);
+    bg.position.z = -1.5;
+    scene.add(bg);
 
-      // material for background (video) with shader
-      const videoTexture = new THREE.VideoTexture(video);
-      videoTexture.minFilter = THREE.LinearFilter;
-      videoTexture.magFilter = THREE.LinearFilter;
-      videoTexture.format = THREE.RGBFormat;
+    // ====== OBJETO 3D ======
+    const boxGeo = new THREE.BoxGeometry(0.3,0.3,0.3);
+    const boxMat = new THREE.MeshNormalMaterial();
+    const cube = new THREE.Mesh(boxGeo, boxMat);
+    cube.position.z = -2;
+    scene.add(cube);
 
-      // create two full-screen planes (one for each eye) rendered behind the scene
-      const bgScene = new THREE.Scene();
-      const bgCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-      const planeGeo = new THREE.PlaneGeometry(2, 2);
-
-      // create two materials using shader - we'll clone and set lensCenter for left/right, strength controls distortion
-      const baseUniforms = {
-        map: { value: videoTexture },
-        lensCenter: { value: new THREE.Vector2(0.5, 0.5) },
-        strength: { value: 0.2 },
-        resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
-      };
-      const shaderMat = new THREE.ShaderMaterial({
-        uniforms: THREE.UniformsUtils.clone(baseUniforms),
-        vertexShader: barrelVertex,
-        fragmentShader: barrelFragment,
-        depthTest: false,
-        depthWrite: false
-      });
-
-      // We'll render the background (camera feed) per-eye manually using full-screen quad
-      const bgMeshLeft = new THREE.Mesh(planeGeo, shaderMat.clone());
-      const bgMeshRight = new THREE.Mesh(planeGeo, shaderMat.clone());
-      // The shader expects lensCenter to map to the correct half of the screen
-      bgMeshLeft.material.uniforms.lensCenter.value = new THREE.Vector2(0.25, 0.5);
-      bgMeshRight.material.uniforms.lensCenter.value = new THREE.Vector2(0.75, 0.5);
-      bgScene.add(bgMeshLeft);
-      bgScene.add(bgMeshRight);
-
-      // helper: request permission for device orientation on iOS
-      async function requestDeviceOrientationPermission() {
-        if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-          try {
-            const res = await DeviceOrientationEvent.requestPermission();
-            if (res === 'granted') {
-              console.log('DeviceOrientation permission granted');
-            } else {
-              console.warn('DeviceOrientation permission denied');
-            }
-          } catch (e) {
-            console.error(e);
-          }
-        }
-      }
-
-      // start sequence triggered by button
-      startBtn.addEventListener('click', async () => {
-        try {
-          // request camera (rear)
-          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
-          video.srcObject = stream;
-          await video.play();
-
-          // iOS needs explicit permission for sensors (must be in user gesture)
-          await requestDeviceOrientationPermission();
-
-          // hide overlay
-          overlay.style.display = 'none';
-
-          // update resolution uniform on resize
-          window.addEventListener('resize', () => {
-            bgMeshLeft.material.uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
-            bgMeshRight.material.uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
-            onResize();
-          });
-
-          // start loop
-          animate();
-        } catch (err) {
-          alert('Erro ao acessar câmera ou sensores: ' + (err.message || err));
-          console.error(err);
-        }
-      });
-
-      // animation loop - render left and right viewports with background
-      function animate() {
+    // ====== LOOP ======
+    function animate(){
         requestAnimationFrame(animate);
-        controls.update();
 
-        // rotate cube slowly for demo
-        cube.rotation.x += 0.005;
-        cube.rotation.y += 0.01;
+        controls.update();
+        camR.quaternion.copy(camL.quaternion);
+
+        cube.rotation.x += 0.01;
+        cube.rotation.y += 0.02;
 
         const w = window.innerWidth;
         const h = window.innerHeight;
@@ -284,40 +101,26 @@
         renderer.setScissorTest(true);
 
         // LEFT EYE
-        renderer.setViewport(0, 0, w / 2, h);
-        renderer.setScissor(0, 0, w / 2, h);
-        // draw background for left half: set lensCenter accordingly inside shader
-        bgMeshLeft.material.uniforms.map = { value: videoTexture };
-        bgMeshLeft.material.uniforms.resolution.value.set(w / 2, h);
-        // render background (a full-screen quad)
-        renderer.render(bgScene, bgCamera);
-
-        // render scene from left camera
-        renderer.render(scene, leftCamera);
+        renderer.setViewport(0, 0, w/2, h);
+        renderer.setScissor(0, 0, w/2, h);
+        renderer.render(scene, camL);
 
         // RIGHT EYE
-        renderer.setViewport(w / 2, 0, w / 2, h);
-        renderer.setScissor(w / 2, 0, w / 2, h);
-        bgMeshRight.material.uniforms.map = { value: videoTexture };
-        bgMeshRight.material.uniforms.resolution.value.set(w / 2, h);
-        renderer.render(bgScene, bgCamera);
-        renderer.render(scene, rightCamera);
+        renderer.setViewport(w/2, 0, w/2, h);
+        renderer.setScissor(w/2, 0, w/2, h);
+        renderer.render(scene, camR);
 
         renderer.setScissorTest(false);
-      }
+    }
 
-      // Ensure cameras follow parent transform: position offsets re-applied each frame if needed
-      // Keep cameras looking forward relative to parent
-      function updateCameraPositions() {
-        leftCamera.position.set(-IPD / 2, 0, 0);
-        rightCamera.position.set(IPD / 2, 0, 0);
-        // copy parent rotation applied via controls automatically
-      }
-      // call periodically
-      setInterval(updateCameraPositions, 500);
+    animate();
+};
 
-    })();
-  </script>
+// resize
+window.addEventListener("resize", () => {
+    renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+
 </body>
-
 </html>
