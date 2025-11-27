@@ -169,10 +169,10 @@ async function startCommon({ useCamera = false, fullscreen = true } = {}) {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       video.srcObject = stream;
       await video.play();
-      videoTexture = new THREE.VideoTexture(video);
+videoTexture = new THREE.VideoTexture(video);
       videoTexture.minFilter = THREE.LinearFilter;
       videoTexture.magFilter = THREE.LinearFilter;
-      videoTexture.format = THREE.RGBFormat;
+videoTexture.format = THREE.RGBAFormat;
       videoTexture.encoding = THREE.sRGBEncoding;
       scene.background = videoTexture;
     } catch(err) {
