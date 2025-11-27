@@ -1,250 +1,323 @@
 <!doctype html>
 <html lang="pt-BR">
+
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,shrink-to-fit=no" />
-  <title>Mixed Reality + VR Estéreo (Cardboard Forçado)</title>
-
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>VR Cardboard via GitHub Pages — Mixed Reality Demo</title>
   <style>
-    html,body{height:100%;margin:0;background:#000;overflow:hidden}
-    #ui{position:fixed;left:12px;top:12px;z-index:20;color:#fff;font-family:system-ui,Arial}
-    button{font-size:16px;padding:8px 12px;margin:6px}
-    #score{font-weight:700;margin-left:8px}
-    video#cam{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;z-index:0}
-    canvas#vr-canvas{position:fixed;inset:0;width:100%;height:100%;z-index:2;pointer-events:auto}
-    .hint{opacity:.9;font-size:13px;margin-top:6px}
-  </style>
-
-  <!-- WEBXR POLYFILL PARA SIMULAR VR EM CELULARES SEM SUPORTE -->
-  <script src="https://cdn.jsdelivr.net/npm/webxr-polyfill@latest/build/webxr-polyfill.min.js"></script>
-
-  <!-- VRButton compatível com polyfill -->
-  <script src="https://cdn.jsdelivr.net/npm/three@0.159.0/examples/jsm/webxr/VRButton.js"></script>
-
-  <script>
-    /* Força WebXR mesmo quando o celular não tem headset */
-    const polyfill = new WebXRPolyfill({
-      cardboardConfig: {
-        VRDisplays: "force",
-        provideFakeOrientation: true
-      }
-    });
-
-    /* Garante que navigator.xr existe */
-    if (!navigator.xr) {
-      navigator.xr = {
-        isSessionSupported: async () => true,
-        requestSession: async () => ({
-          end: async () => {},
-          requestReferenceSpace: async () => ({}),
-          updateRenderState: () => {},
-          inputs: []
-        })
-      };
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      background: #000;
+      color: #fff;
+      font-family: sans-serif
     }
-  </script>
+
+    #overlay {
+      position: fixed;
+      left: 0;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      backdrop-filter: blur(2px);
+    }
+
+    button {
+      font-size: 18px;
+      padding: 12px 18px;
+      border-radius: 10px;
+      border: none;
+      background: #1e88e5;
+      color: white
+    }
+
+    #hint {
+      margin-top: 12px;
+      opacity: .9;
+      font-size: 14px
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* simple guide lines for Cardboard alignment */
+    .goggle-line {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      top: 50%;
+      height: 2px;
+      background: rgba(255, 255, 255, .08);
+      width: 100%;
+      z-index: 9;
+    }
+
+    .vertical-split {
+      position: fixed;
+      left: 50%;
+      top: 0;
+      height: 100%;
+      width: 2px;
+      background: rgba(255, 255, 255, .06);
+      z-index: 9;
+      transform: translateX(-1px);
+    }
+  </style>
 </head>
 
 <body>
-
-  <div id="ui">
-    <button id="start-stereo">VR Estéreo</button>
-    <button id="start-fallback">Somente Câmera</button>
-    <div class="hint">Toque para atirar</div>
-    <div class="hint">Placar: <span id="score">0</span></div>
-    <div class="hint" id="notes"></div>
+  <div id="overlay">
+    <h1>VR Cardboard — Mixed Reality Demo</h1>
+    <button id="startBtn">Start VR</button>
+    <div id="hint">Permita câmera traseira e sensores. Use um adaptador tipo Cardboard.</div>
+    <div style="font-size:12px;margin-top:8px;opacity:.8">Se estiver no iOS, aceite a permissão de sensores quando
+      solicitado.</div>
   </div>
 
-  <video id="cam" autoplay playsinline muted></video>
-  <canvas id="vr-canvas"></canvas>
+  <div class="goggle-line"></div>
+  <div class="vertical-split"></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.min.js"></script>
+  <!-- Three.js via CDN -->
+  <script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
+  <!-- DeviceOrientationControls (simple implementation) -->
+  <script src="https://unpkg.com/three@0.158.0/examples/js/controls/DeviceOrientationControls.js"></script>
 
   <script>
-  /***********************
-   CONFIGURAÇÕES GERAIS
-  ***********************/
-  const notes = document.getElementById('notes');
-  const scoreEl = document.getElementById('score');
-  const video = document.getElementById('cam');
-  const canvas = document.getElementById('vr-canvas');
-  const startStereoBtn = document.getElementById('start-stereo');
-  const startFallbackBtn = document.getElementById('start-fallback');
+    (async function () {
+      const startBtn = document.getElementById('startBtn');
+      const overlay = document.getElementById('overlay');
 
-  let renderer, scene, cameraL, cameraR;
-  let W = window.innerWidth, H = window.innerHeight;
-  let dpr = Math.min(window.devicePixelRatio || 1, 2);
-  let score = 0;
-  const IPD = 0.065;
+      // canvas / renderer
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(window.devicePixelRatio || 1);
+      document.body.appendChild(renderer.domElement);
 
-  /***********************
-   INICIAR CÂMERA
-  ***********************/
-  async function startCamera(){
-    try{
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-        audio: false
-      });
-      video.srcObject = stream;
-      await video.play();
-      return true;
-    }catch(err){
-      notes.innerText = 'Erro ao acessar câmera: ' + err;
-      return false;
-    }
-  }
+      // scene & two cameras (left/right)
+      const scene = new THREE.Scene();
 
-  /***********************
-    INICIALIZAR THREE
-  ***********************/
-  function initThree(){
-    renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
-    renderer.setClearColor(0x000000, 0);
-    renderer.setPixelRatio(dpr);
-    renderer.setSize(W, H, false);
+      // a simple ambient light and a directional light
+      scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+      const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+      dir.position.set(5, 10, 7);
+      scene.add(dir);
 
-    scene = new THREE.Scene();
+      // create a simple object to visualize
+      const geo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xff9933, metalness: 0.2, roughness: 0.6 });
+      const cube = new THREE.Mesh(geo, mat);
+      cube.position.set(0, 0, -1.5);
+      scene.add(cube);
 
-    // Luzes
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1));
-    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+      // floor (semi-transparent)
+      const floorGeo = new THREE.PlaneGeometry(5, 5);
+      const floorMat = new THREE.MeshStandardMaterial({ color: 0x222222, transparent: true, opacity: 0.2 });
+      const floor = new THREE.Mesh(floorGeo, floorMat);
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.y = -0.7;
+      scene.add(floor);
 
-    // Alvos
-    for(let i=0;i<6;i++){
-      const m = new THREE.Mesh(
-        new THREE.SphereGeometry(0.06, 16, 12),
-        new THREE.MeshStandardMaterial({ color: 0xff6b6b })
-      );
-      m.position.set((Math.random()-0.5)*1.2, (Math.random()-0.3)*0.5, -0.8 - Math.random()*1.2);
-      m.userData.floatSpeed = 0.002 + Math.random()*0.004;
-      scene.add(m);
-    }
-  }
+      // two perspective cameras for stereoscopic view
+      const aspect = window.innerWidth / window.innerHeight;
+      const leftCamera = new THREE.PerspectiveCamera(60, aspect, 0.01, 100);
+      const rightCamera = new THREE.PerspectiveCamera(60, aspect, 0.01, 100);
+      // initial IPD (inter-pupillary distance) in meters; adjust if needed
+      const IPD = 0.06;
 
-  /***********************
-    CÂMERAS ESQUERDA/DIREITA
-  ***********************/
-  function setupCameras(){
-    const fov = 70;
-    cameraL = new THREE.PerspectiveCamera(fov, (W/2)/H, 0.01, 50);
-    cameraR = new THREE.PerspectiveCamera(fov, (W/2)/H, 0.01, 50);
+      leftCamera.position.x = -IPD / 2;
+      rightCamera.position.x = IPD / 2;
+      leftCamera.position.z = 0;
+      rightCamera.position.z = 0;
 
-    cameraL.position.set(-IPD/2, 0, 0);
-    cameraR.position.set(IPD/2, 0, 0);
+      // device orientation controls - applied to camera parent so both cameras move together
+      const cameraParent = new THREE.Group();
+      cameraParent.add(leftCamera);
+      cameraParent.add(rightCamera);
+      scene.add(cameraParent);
 
-    const center = new THREE.Vector3(0,0,-1);
-    cameraL.lookAt(center);
-    cameraR.lookAt(center);
-  }
+      const controls = new THREE.DeviceOrientationControls(cameraParent);
 
-  function resizeAll(){
-    W = window.innerWidth;
-    H = window.innerHeight;
+      // video texture (camera passthrough)
+      let video = document.createElement('video');
+      video.setAttribute('autoplay', '');
+      video.setAttribute('playsinline', ''); // iOS
+      video.muted = true;
 
-    renderer.setSize(W, H, false);
-    cameraL.aspect = (W/2)/H;
-    cameraR.aspect = (W/2)/H;
-    cameraL.updateProjectionMatrix();
-    cameraR.updateProjectionMatrix();
-  }
+      let stream;
 
-  /***********************
-       LOOP DE RENDER
-  ***********************/
-  function animate(){
-    const t = performance.now();
-
-    scene.traverse(o=>{
-      if(o.userData.floatSpeed){
-        o.position.y += Math.sin(t * o.userData.floatSpeed) * 0.0007;
+      function onResize() {
+        renderer.setSize(window.innerWidth, window.innerHeight);
       }
-    });
+      window.addEventListener('resize', onResize);
+      onResize();
 
-    // esquerda
-    renderer.setViewport(0, 0, W/2, H);
-    renderer.setScissor(0, 0, W/2, H);
-    renderer.setScissorTest(true);
-    renderer.render(scene, cameraL);
-
-    // direita
-    renderer.setViewport(W/2, 0, W/2, H);
-    renderer.setScissor(W/2, 0, W/2, H);
-    renderer.setScissorTest(true);
-    renderer.render(scene, cameraR);
-
-    renderer.setAnimationLoop(animate);
-  }
-
-  /***********************
-       TOQUE / RAYCAST
-  ***********************/
-  function onPointer(ev){
-    ev.preventDefault();
-    const rect = canvas.getBoundingClientRect();
-    const clientX = ev.touches ? ev.touches[0].clientX : ev.clientX;
-    const half = (clientX - rect.left) < (rect.width/2) ? 'left' : 'right';
-
-    const cam = half === 'left' ? cameraL : cameraR;
-    const ndcX = ((clientX - rect.left) / (rect.width/2)) * 2 - 1;
-    const ndcY = -((ev.touches ? ev.touches[0].clientY : ev.clientY) / rect.height) * 2 + 1;
-
-    const ray = new THREE.Raycaster();
-    ray.setFromCamera({x: ndcX, y: ndcY}, cam);
-    const hits = ray.intersectObjects(scene.children);
-
-    if(hits.length){
-      scene.remove(hits[0].object);
-      score++;
-      scoreEl.textContent = score;
+      // Barrel distortion shader (fragment) - simple radial distortion
+      const barrelFragment = `
+    uniform sampler2D map;
+    uniform vec2 lensCenter;
+    uniform float strength;
+    uniform vec2 resolution;
+    varying vec2 vUv;
+    void main(){
+      vec2 uv = vUv;
+      vec2 pos = uv * 2.0 - 1.0; // -1..1
+      pos.x *= resolution.x/resolution.y;
+      float r = length(pos);
+      // distortion factor (simple polynomial)
+      float k = 1.0 + strength * (r*r);
+      vec2 distorted = pos * k;
+      distorted.x /= (resolution.x/resolution.y);
+      vec2 cuv = (distorted + 1.0) * 0.5;
+      vec4 color = texture2D(map, cuv);
+      gl_FragColor = color;
     }
-  }
-
-  /***********************
-     MODO VR ESTÉREO
-  ***********************/
-  async function startStereo(){
-    const ok = await startCamera();
-    if(!ok) return;
-
-    // Forçar XR
-    renderer.xr.enabled = true;
-    renderer.xr.setFramebufferScaleFactor(1.0);
-
-    // Botão VR
-    const btn = VRButton.createButton(renderer, {
-      requiredFeatures: [],
-      optionalFeatures: ['local-floor'],
-      forceStereo: true
-    });
-    document.body.appendChild(btn);
-
-    // Fullscreen
-    if(document.documentElement.requestFullscreen){
-      try { await document.documentElement.requestFullscreen(); } catch(e){}
+  `;
+      const barrelVertex = `
+    varying vec2 vUv;
+    void main(){
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
     }
+  `;
 
-    initThree();
-    setupCameras();
+      // material for background (video) with shader
+      const videoTexture = new THREE.VideoTexture(video);
+      videoTexture.minFilter = THREE.LinearFilter;
+      videoTexture.magFilter = THREE.LinearFilter;
+      videoTexture.format = THREE.RGBFormat;
 
-    canvas.addEventListener('touchstart', onPointer, {passive:false});
-    canvas.addEventListener('mousedown', onPointer, {passive:false});
+      // create two full-screen planes (one for each eye) rendered behind the scene
+      const bgScene = new THREE.Scene();
+      const bgCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      const planeGeo = new THREE.PlaneGeometry(2, 2);
 
-    window.addEventListener('resize', resizeAll);
+      // create two materials using shader - we'll clone and set lensCenter for left/right, strength controls distortion
+      const baseUniforms = {
+        map: { value: videoTexture },
+        lensCenter: { value: new THREE.Vector2(0.5, 0.5) },
+        strength: { value: 0.2 },
+        resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
+      };
+      const shaderMat = new THREE.ShaderMaterial({
+        uniforms: THREE.UniformsUtils.clone(baseUniforms),
+        vertexShader: barrelVertex,
+        fragmentShader: barrelFragment,
+        depthTest: false,
+        depthWrite: false
+      });
 
-    notes.innerText = "VR Estéreo Forçado — pronto para usar no VR Box.";
+      // We'll render the background (camera feed) per-eye manually using full-screen quad
+      const bgMeshLeft = new THREE.Mesh(planeGeo, shaderMat.clone());
+      const bgMeshRight = new THREE.Mesh(planeGeo, shaderMat.clone());
+      // The shader expects lensCenter to map to the correct half of the screen
+      bgMeshLeft.material.uniforms.lensCenter.value = new THREE.Vector2(0.25, 0.5);
+      bgMeshRight.material.uniforms.lensCenter.value = new THREE.Vector2(0.75, 0.5);
+      bgScene.add(bgMeshLeft);
+      bgScene.add(bgMeshRight);
 
-    animate();
-  }
+      // helper: request permission for device orientation on iOS
+      async function requestDeviceOrientationPermission() {
+        if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+          try {
+            const res = await DeviceOrientationEvent.requestPermission();
+            if (res === 'granted') {
+              console.log('DeviceOrientation permission granted');
+            } else {
+              console.warn('DeviceOrientation permission denied');
+            }
+          } catch (e) {
+            console.error(e);
+          }
+        }
+      }
 
-  async function startFallback(){
-    await startCamera();
-    notes.innerText = "Modo câmera (sem VR).";
-  }
+      // start sequence triggered by button
+      startBtn.addEventListener('click', async () => {
+        try {
+          // request camera (rear)
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+          video.srcObject = stream;
+          await video.play();
 
-  startStereoBtn.addEventListener('click', startStereo);
-  startFallbackBtn.addEventListener('click', startFallback);
+          // iOS needs explicit permission for sensors (must be in user gesture)
+          await requestDeviceOrientationPermission();
 
+          // hide overlay
+          overlay.style.display = 'none';
+
+          // update resolution uniform on resize
+          window.addEventListener('resize', () => {
+            bgMeshLeft.material.uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
+            bgMeshRight.material.uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
+            onResize();
+          });
+
+          // start loop
+          animate();
+        } catch (err) {
+          alert('Erro ao acessar câmera ou sensores: ' + (err.message || err));
+          console.error(err);
+        }
+      });
+
+      // animation loop - render left and right viewports with background
+      function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+
+        // rotate cube slowly for demo
+        cube.rotation.x += 0.005;
+        cube.rotation.y += 0.01;
+
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+
+        renderer.setScissorTest(true);
+
+        // LEFT EYE
+        renderer.setViewport(0, 0, w / 2, h);
+        renderer.setScissor(0, 0, w / 2, h);
+        // draw background for left half: set lensCenter accordingly inside shader
+        bgMeshLeft.material.uniforms.map = { value: videoTexture };
+        bgMeshLeft.material.uniforms.resolution.value.set(w / 2, h);
+        // render background (a full-screen quad)
+        renderer.render(bgScene, bgCamera);
+
+        // render scene from left camera
+        renderer.render(scene, leftCamera);
+
+        // RIGHT EYE
+        renderer.setViewport(w / 2, 0, w / 2, h);
+        renderer.setScissor(w / 2, 0, w / 2, h);
+        bgMeshRight.material.uniforms.map = { value: videoTexture };
+        bgMeshRight.material.uniforms.resolution.value.set(w / 2, h);
+        renderer.render(bgScene, bgCamera);
+        renderer.render(scene, rightCamera);
+
+        renderer.setScissorTest(false);
+      }
+
+      // Ensure cameras follow parent transform: position offsets re-applied each frame if needed
+      // Keep cameras looking forward relative to parent
+      function updateCameraPositions() {
+        leftCamera.position.set(-IPD / 2, 0, 0);
+        rightCamera.position.set(IPD / 2, 0, 0);
+        // copy parent rotation applied via controls automatically
+      }
+      // call periodically
+      setInterval(updateCameraPositions, 500);
+
+    })();
   </script>
 </body>
+
 </html>
