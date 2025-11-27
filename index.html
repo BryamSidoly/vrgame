@@ -1,139 +1,189 @@
 <!doctype html>
 <html lang="pt-BR">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-<title>Cardboard AR Simples</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Cardboard AR Simples</title>
 
-<style>
-  html,body{
-    height:100%;margin:0;background:#000;color:#fff;
-    font-family:Inter,system-ui, -apple-system, "Segoe UI", Roboto, Arial;
-    overflow:hidden;
-  }
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #000;
+      color: #fff;
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+      overflow: hidden;
+    }
 
-  #ui {
-    position:fixed; left:12px; top:12px; z-index:50; display:flex; gap:8px; align-items:center;
-    background: rgba(0,0,0,0.25); padding:8px; border-radius:10px;
-  }
-  button{
-    font-size:14px;padding:8px 10px;border:0;border-radius:8px;
-    background:#1e88e5;color:white;cursor:pointer;
-  }
-  button.secondary{background:#455a64}
+    #ui {
+      position: fixed;
+      left: 12px;
+      top: 12px;
+      z-index: 50;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      background: rgba(0,0,0,0.25);
+      padding: 8px;
+      border-radius: 10px;
+    }
 
-  #overlay {
-    position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
-    z-index:40; background: rgba(0,0,0,0.8);
-    gap:12px; flex-direction:column; padding:20px; box-sizing:border-box;
-  }
+    button {
+      font-size: 14px;
+      padding: 8px 10px;
+      border: 0;
+      border-radius: 8px;
+      background: #1e88e5;
+      color: white;
+      cursor: pointer;
+    }
 
-  #stereo {
-    position:absolute; inset:0; display:flex; flex-direction:row;
-    width:100%; height:100%; overflow:hidden;
-  }
+    button.secondary {
+      background: #455a64;
+    }
 
-  .eye {
-    width:50%; height:100%; overflow:hidden;
-    background:black; position:relative;
-  }
+    #overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 40;
+      background: rgba(0,0,0,0.8);
+      gap: 12px;
+      flex-direction: column;
+      padding: 20px;
+      box-sizing: border-box;
+    }
 
-  video {
-    position:absolute;
-    width:100vw; height:100vh;
-    object-fit:cover;
-    left:50%; top:50%;
-    transform:translate(-50%, -50%);
-  }
+    #stereo {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: row;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
 
-  #msg {
-    position:fixed; left: 12px; bottom: 12px;
-    color:#ddd; font-size:13px; z-index:70;
-    background: rgba(0,0,0,0.35); padding:8px 10px;
-    border-radius:8px;
-  }
-</style>
+    .eye {
+      width: 50%;
+      height: 100%;
+      overflow: hidden;
+      background: black;
+      position: relative;
+    }
+
+    video {
+      position: absolute;
+      width: 100vw;
+      height: 100vh;
+      object-fit: cover;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+    }
+
+    #msg {
+      position: fixed;
+      left: 12px;
+      bottom: 12px;
+      color: #ddd;
+      font-size: 13px;
+      z-index: 70;
+      background: rgba(0,0,0,0.35);
+      padding: 8px 10px;
+      border-radius: 8px;
+    }
+  </style>
 </head>
+
 <body>
 
-<div id="ui">
-  <button id="btn-ar">Iniciar AR</button>
-  <button id="btn-exit" class="secondary">Sair</button>
-</div>
+  <div id="ui">
+    <button id="btn-ar">Iniciar AR</button>
+    <button id="btn-exit" class="secondary">Sair</button>
+  </div>
 
-<div id="overlay">
-  <h1 style="margin:0">Cardboard AR Simples</h1>
-  <p style="max-width:420px;text-align:center;margin:0">
-    Esta é uma versão simples com visão estéreo da câmera para uso com Cardboard.
-  </p>
-  <button id="start-ar">Iniciar AR</button>
-</div>
+  <div id="overlay">
+    <h1 style="margin:0">Cardboard AR Simples</h1>
+    <p style="max-width:420px; text-align:center; margin:0">
+      Esta é uma versão simples com visão estéreo da câmera para uso com Cardboard.
+    </p>
+    <button id="start-ar">Iniciar AR</button>
+  </div>
 
-<div id="stereo" style="display:none">
-  <div class="eye"><video id="videoL" autoplay playsinline></video></div>
-  <div class="eye"><video id="videoR" autoplay playsinline></video></div>
-</div>
+  <div id="stereo" style="display:none">
+    <div class="eye">
+      <video id="videoL" autoplay playsinline></video>
+    </div>
+    <div class="eye">
+      <video id="videoR" autoplay playsinline></video>
+    </div>
+  </div>
 
-<div id="msg">Aguardando…</div>
+  <div id="msg">Aguardando…</div>
 
-<script>
-const overlay = document.getElementById("overlay");
-const stereo  = document.getElementById("stereo");
-const msg     = document.getElementById("msg");
+  <script>
+    const overlay = document.getElementById("overlay");
+    const stereo  = document.getElementById("stereo");
+    const msg     = document.getElementById("msg");
 
-const btnAr   = document.getElementById("btn-ar");
-const btnExit = document.getElementById("btn-exit");
-const startAr = document.getElementById("start-ar");
+    const btnAr   = document.getElementById("btn-ar");
+    const btnExit = document.getElementById("btn-exit");
+    const startAr = document.getElementById("start-ar");
 
-let stream = null;
+    let stream = null;
 
-async function startAR() {
-  overlay.style.display = "none";
-  stereo.style.display = "flex";
+    async function startAR() {
+      overlay.style.display = "none";
+      stereo.style.display = "flex";
 
-  msg.textContent = "Abrindo câmera…";
+      msg.textContent = "Abrindo câmera…";
 
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 }
-      },
-      audio: false
-    });
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          },
+          audio: false
+        });
 
-    document.getElementById("videoL").srcObject = stream;
-    document.getElementById("videoR").srcObject = stream;
+        document.getElementById("videoL").srcObject = stream;
+        document.getElementById("videoR").srcObject = stream;
 
-    msg.textContent = "AR ativo";
-  } catch (err) {
-    msg.textContent = "Erro: " + err.message;
-    overlay.style.display = "";
-  }
+        msg.textContent = "AR ativo";
+      } catch (err) {
+        msg.textContent = "Erro: " + err.message;
+        overlay.style.display = "";
+      }
 
-  try {
-    await document.documentElement.requestFullscreen();
-  } catch(e){}
-}
+      try {
+        await document.documentElement.requestFullscreen();
+      } catch(e) {}
+    }
 
-function stopAll() {
-  if (stream) {
-    stream.getTracks().forEach(t => t.stop());
-    stream = null;
-  }
+    function stopAll() {
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+      }
 
-  stereo.style.display = "none";
-  overlay.style.display = "";
-  msg.textContent = "Parado";
+      stereo.style.display = "none";
+      overlay.style.display = "";
+      msg.textContent = "Parado";
 
-  try { document.exitFullscreen(); } catch(e){}
-}
+      try { 
+        document.exitFullscreen(); 
+      } catch(e) {}
+    }
 
-startAr.addEventListener("click", startAR);
-btnAr.addEventListener("click", startAR);
-btnExit.addEventListener("click", stopAll);
-</script>
+    startAr.addEventListener("click", startAR);
+    btnAr.addEventListener("click", startAR);
+    btnExit.addEventListener("click", stopAll);
+  </script>
 
 </body>
 </html>
