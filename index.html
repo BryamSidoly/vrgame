@@ -55,7 +55,6 @@ void main(){
 }
 `;
 
-// Fragment shader: aplica barrel distortion (Brown model simplificado)
 const fragmentSrc = `
 precision mediump float;
 uniform sampler2D u_tex;
@@ -87,7 +86,6 @@ vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
 }
 `;
 
-// ---- Init GL & buffers ----
 const canvas = document.getElementById('glcanvas');
 const gl = canvas.getContext('webgl', { antialias: true }) || canvas.getContext('experimental-webgl');
 if(!gl) alert('WebGL não disponível.');
@@ -95,7 +93,6 @@ if(!gl) alert('WebGL não disponível.');
 const program = createProgram(gl, vertexSrc, fragmentSrc);
 gl.useProgram(program);
 
-// full-screen quad (two triangles) in clip space
 const quadVerts = new Float32Array([
   -1, -1,
    1, -1,
@@ -111,14 +108,12 @@ const a_pos = gl.getAttribLocation(program, 'a_pos');
 gl.enableVertexAttribArray(a_pos);
 gl.vertexAttribPointer(a_pos, 2, gl.FLOAT, false, 0, 0);
 
-// uniforms
 const u_tex = gl.getUniformLocation(program, 'u_tex');
 const u_k1  = gl.getUniformLocation(program, 'u_k1');
 const u_k2  = gl.getUniformLocation(program, 'u_k2');
 const u_aspect = gl.getUniformLocation(program, 'u_aspect');
 const u_lensCenter = gl.getUniformLocation(program, 'u_lensCenter');
 
-// create texture for video
 const tex = gl.createTexture();
 gl.bindTexture(gl.TEXTURE_2D, tex);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -126,7 +121,6 @@ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-// ---- video setup ----
 const video = document.createElement('video');
 video.autoplay = true;
 video.playsInline = true;
@@ -145,7 +139,7 @@ async function startAR(){
     stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: "environment" },
-        width: { ideal: 2560 }, // tenta alta resolução
+        width: { ideal: 2560 }, 
         height: { ideal: 1440 },
         frameRate: { ideal: 60 }
       },
@@ -173,7 +167,6 @@ function stopAll(){
 btnAr.addEventListener('click', startAR);
 btnExit.addEventListener('click', stopAll);
 
-// ---- render loop ----
 function resizeCanvasToDisplaySize(){
   const dpr = window.devicePixelRatio || 1;
   const width = Math.floor(window.innerWidth * dpr);
@@ -184,7 +177,6 @@ function resizeCanvasToDisplaySize(){
   }
 }
 
-// default distortion coefficients (ajuste para suas lentes)
 let K1 = 0.34;
 let K2 = 0.55;
 
@@ -192,57 +184,49 @@ function renderFrame(){
   if(!running) return;
   if(video.readyState < 2){ requestAnimationFrame(renderFrame); return; }
 
-  // update texture from video
   gl.bindTexture(gl.TEXTURE_2D, tex);
   try {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
   } catch(e){
-    // some browsers require texImage2D with width/height when video not same origin
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, video.videoWidth, video.videoHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
   }
 
-  // viewport: left eye
   const w = canvas.width;
   const h = canvas.height;
   const eyeW = Math.floor(w / 2);
   const eyeH = h;
 
-  // common GL state
   gl.clearColor(0,0,0,1);
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.viewport(0, 0, eyeW, eyeH);
 
-  // set uniforms for left eye
   gl.uniform1i(u_tex, 0);
   gl.uniform1f(u_k1, K1);
   gl.uniform1f(u_k2, K2);
 
-  // aspect correction: because we map centered.x *= aspect where aspect = (width/height)
-  // For each eye, we use aspect = (eye_pixel_width / eye_pixel_height) * (video_height / video_width)
-  const videoAspect = (video.videoWidth && video.videoHeight) ? ( (eyeW/eyeH) * (video.videoHeight / video.videoWidth) ) : (eyeW/eyeH);
-  gl.uniform1f(u_aspect, videoAspect);
+ const videoAspect = (video.videoWidth && video.videoHeight) ? ( (eyeW/eyeH) * (video.videoHeight / video.videoWidth) ) : (eyeW/eyeH);
 
-  // lens centre in UV space (per-eye). Since we draw same texture to each eye, lensCenter = (0.5,0.5)
-  gl.uniform2f(u_lensCenter, 0.5, 0.5);
+const leftCenter  = 0.25;  // metade da metade esquerda
+const rightCenter = 0.75;  // metade da metade direita
+const ipd = 0.02;          // ajuste fino do alinhamento horizontal
 
-  gl.drawArrays(gl.TRIANGLES, 0, 6);
+// ----- OLHO ESQUERDO -----
+gl.viewport(0, 0, eyeW, eyeH);
+gl.uniform1f(u_aspect, videoAspect);
+gl.uniform2f(u_lensCenter, leftCenter + ipd, 0.5);
+gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-  // right eye
-  gl.viewport(eyeW, 0, eyeW, eyeH);
-  // same uniforms suffice; could tweak lensCenter.x for IPD correction or small shift
-  // Optional small horizontal shift per eye to simulate IPD:
-  const ipdShift = 0.03; // ajuste para seu gosto (positive moves sampling slightly)
-  // for right eye shift to the right in UV
-  gl.uniform2f(u_lensCenter, 0.5 + ipdShift, 0.5);
-
-  gl.drawArrays(gl.TRIANGLES, 0, 6);
+// ----- OLHO DIREITO -----
+gl.viewport(eyeW, 0, eyeW, eyeH);
+gl.uniform1f(u_aspect, videoAspect);
+gl.uniform2f(u_lensCenter, rightCenter - ipd, 0.5);
+gl.drawArrays(gl.TRIANGLES, 0, 6);
 
   requestAnimationFrame(renderFrame);
 }
 
 function resizeAndLoop(){
   resizeCanvasToDisplaySize();
-  // adjust viewport resolution on devicePixelRatio changes
   requestAnimationFrame(function loop(){
     if(!running) return;
     resizeCanvasToDisplaySize();
@@ -251,10 +235,8 @@ function resizeAndLoop(){
   requestAnimationFrame(renderFrame);
 }
 
-// small UI to change K1/K2 at runtime (browser console)
 window.setDistortion = (k1,k2) => { K1 = k1; K2 = k2; console.log('k1,k2 =',k1,k2); };
 
-// helpful message
 console.log('Iniciar: clique "Iniciar AR". Para ajustar distorção em runtime use setDistortion(k1,k2) no console. Ex.: setDistortion(-0.34,0.55)');
 
 </script>
