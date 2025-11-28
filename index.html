@@ -149,7 +149,7 @@
     gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
 
     const a_pos = gl.getAttribLocation(program, 'a_pos');
-
+    
     gl.enableVertexAttribArray(a_pos);
     gl.vertexAttribPointer(a_pos, 2, gl.FLOAT, false, 0, 0);
 
@@ -184,9 +184,9 @@
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: "environment" },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 30 }
+            width: { ideal: 2560 },
+            height: { ideal: 1440 },
+            frameRate: { ideal: 60 }
           },
           audio: false
         });
@@ -231,9 +231,9 @@
 
       gl.bindTexture(gl.TEXTURE_2D, tex);
       try {
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
       } catch (e) {
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, gl.RGBA, video.videoWidth, video.videoHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, video.videoWidth, video.videoHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
       }
 
       const w = canvas.width;
