@@ -2,12 +2,15 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <title>VR Protótipo Cardboard</title>
+    <title>VR Protótipo ES6</title>
     <style>
         body { margin: 0; overflow: hidden; }
         #info {
-            position: absolute; top: 10px; left: 10px;
-            color: white; background: rgba(0,0,0,0.5); padding: 5px 10px;
+            position: absolute;
+            top: 10px; left: 10px;
+            color: white;
+            background: rgba(0,0,0,0.5);
+            padding: 5px 10px;
             font-family: sans-serif;
             z-index: 1;
         }
@@ -17,13 +20,15 @@
     <div id="info">Mova o celular para girar a câmera.</div>
 
     <!-- Polyfill WebXR -->
-    <script src="https://unpkg.com/webxr-polyfill@latest/build/webxr-polyfill.min.js"></script>
+    <script type="module">
+        import 'https://unpkg.com/webxr-polyfill@latest/build/webxr-polyfill.module.js';
+    </script>
 
-    <!-- Three.js -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/webxr/VRButton.js"></script>
+    <!-- Three.js e VRButton via módulos ES6 -->
+    <script type="module">
+        import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.module.js';
+        import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/webxr/VRButton.js';
 
-    <script>
         let camera, scene, renderer;
         let cube;
 
@@ -59,13 +64,11 @@
             light.position.set(0, 20, 0);
             scene.add(light);
 
-            // Giroscópio fallback (para celulares sem WebXR)
+            // Giroscópio fallback (caso WebXR não esteja disponível)
             window.addEventListener("deviceorientation", (event) => {
                 const alpha = event.alpha ? THREE.MathUtils.degToRad(event.alpha) : 0;
                 const beta  = event.beta  ? THREE.MathUtils.degToRad(event.beta)  : 0;
                 const gamma = event.gamma ? THREE.MathUtils.degToRad(event.gamma) : 0;
-
-                // Atualiza rotação da câmera
                 camera.rotation.set(beta, alpha, -gamma, "ZXY");
             });
 
