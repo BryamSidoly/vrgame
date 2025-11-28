@@ -1,29 +1,47 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
+
 <head>
   <meta charset="UTF-8">
   <title>VR Protótipo Interativo</title>
   <style>
-    body { margin: 0; overflow: hidden; }
+    body {
+      margin: 0;
+      overflow: hidden;
+    }
+
     #info {
       position: absolute;
-      top: 10px; left: 10px;
-      color: white; background: rgba(0,0,0,0.5);
+      top: 10px;
+      left: 10px;
+      color: white;
+      background: rgba(0, 0, 0, 0.5);
       padding: 5px 10px;
       font-family: sans-serif;
       z-index: 1;
     }
+
     #score {
       position: absolute;
-      top: 10px; right: 10px;
-      color: white; background: rgba(0,0,0,0.5);
+      top: 10px;
+      right: 10px;
+      color: white;
+      background: rgba(0, 0, 0, 0.5);
       padding: 5px 10px;
       font-family: sans-serif;
       z-index: 1;
     }
   </style>
 </head>
+
 <body>
+  <button id="startCamera" style="
+  position:absolute; top:50%; left:50%;
+  transform:translate(-50%, -50%);
+  z-index:2; padding:10px 20px;
+  font-size:16px;
+  ">Ativar Câmera</button>
+
   <div id="info">Mova o celular para girar a câmera e olhar para os cubos.</div>
   <div id="score">Score: 0</div>
 
@@ -35,11 +53,33 @@
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.module.js';
     import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/webxr/VRButton.js';
 
+document.getElementById('startCamera').addEventListener('click', () => {
+  const video = document.createElement('video');
+  video.autoplay = true;
+  video.muted = true;
+  video.playsInline = true;
+
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
+    .then(stream => {
+      video.srcObject = stream;
+      video.play();
+
+      const videoTexture = new THREE.VideoTexture(video);
+      scene.background = videoTexture;
+
+      // Esconde o botão depois de ativar a câmera
+      document.getElementById('startCamera').style.display = 'none';
+    })
+    .catch(err => {
+      console.warn("Não foi possível acessar a câmera:", err);
+    });
+});
+
     let camera, scene, renderer;
     let cubes = [];
     let score = 0;
     const raycaster = new THREE.Raycaster();
-    const gazeVector = new THREE.Vector3(0,0,-1);
+    const gazeVector = new THREE.Vector3(0, 0, -1);
 
     init();
     animate();
@@ -48,28 +88,28 @@
       scene = new THREE.Scene();
 
       // Cria um elemento de vídeo
-const video = document.createElement('video');
-video.autoplay = true;
-video.muted = true;
-video.playsInline = true;
+      const video = document.createElement('video');
+      video.autoplay = true;
+      video.muted = true;
+      video.playsInline = true;
 
-// Pede permissão para usar a câmera
-navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
-  .then(stream => {
-    video.srcObject = stream;
-    video.play();
+      // Pede permissão para usar a câmera
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
+        .then(stream => {
+          video.srcObject = stream;
+          video.play();
 
-    // Cria textura de vídeo e define como fundo da cena
-    const videoTexture = new THREE.VideoTexture(video);
-    scene.background = videoTexture;
-  })
-  .catch(err => {
-    console.warn("Não foi possível acessar a câmera:", err);
-  });
+          // Cria textura de vídeo e define como fundo da cena
+          const videoTexture = new THREE.VideoTexture(video);
+          scene.background = videoTexture;
+        })
+        .catch(err => {
+          console.warn("Não foi possível acessar a câmera:", err);
+        });
 
       scene.background = new THREE.Color(0x202020);
 
-      camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.1, 1000);
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
       camera.position.z = 0;
 
       renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -80,11 +120,11 @@ navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audi
       document.body.appendChild(VRButton.createButton(renderer));
 
       const light = new THREE.HemisphereLight(0xffffff, 0x444444);
-      light.position.set(0,20,0);
+      light.position.set(0, 20, 0);
       scene.add(light);
 
       // Gera cubos aleatórios
-      for(let i=0;i<10;i++){
+      for (let i = 0; i < 10; i++) {
         addRandomCube();
       }
 
@@ -92,10 +132,10 @@ navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audi
       const deviceQuat = new THREE.Quaternion();
       const worldTransform = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
 
-      window.addEventListener('deviceorientation', (event)=>{
-        if(!event.alpha) return;
+      window.addEventListener('deviceorientation', (event) => {
+        if (!event.alpha) return;
         const alpha = THREE.MathUtils.degToRad(event.alpha);
-        const beta  = THREE.MathUtils.degToRad(event.beta);
+        const beta = THREE.MathUtils.degToRad(event.beta);
         const gamma = THREE.MathUtils.degToRad(event.gamma);
         const euler = new THREE.Euler(beta, alpha, -gamma, 'ZXY');
         deviceQuat.setFromEuler(euler);
@@ -103,22 +143,22 @@ navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audi
         camera.quaternion.copy(deviceQuat);
       });
 
-      window.addEventListener('resize', ()=>{
-        camera.aspect = window.innerWidth/window.innerHeight;
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
       });
     }
 
-    function addRandomCube(){
-      const geometry = new THREE.BoxGeometry(0.5,0.5,0.5);
+    function addRandomCube() {
+      const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
       const material = new THREE.MeshNormalMaterial();
       const cube = new THREE.Mesh(geometry, material);
 
       cube.position.set(
-        (Math.random()-0.5)*6,
-        (Math.random()-0.5)*4,
-        -Math.random()*6-2
+        (Math.random() - 0.5) * 6,
+        (Math.random() - 0.5) * 4,
+        -Math.random() * 6 - 2
       );
 
       scene.add(cube);
@@ -126,9 +166,9 @@ navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audi
     }
 
     function animate() {
-      renderer.setAnimationLoop(()=>{
+      renderer.setAnimationLoop(() => {
         // Rotaciona cubos
-        cubes.forEach(c=>{
+        cubes.forEach(c => {
           c.rotation.x += 0.01;
           c.rotation.y += 0.01;
         });
@@ -140,13 +180,13 @@ navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audi
       });
     }
 
-    function checkGaze(){
-      raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+    function checkGaze() {
+      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
       const intersects = raycaster.intersectObjects(cubes);
-      if(intersects.length>0){
+      if (intersects.length > 0) {
         const cube = intersects[0].object;
         scene.remove(cube);
-        cubes = cubes.filter(c=>c!==cube);
+        cubes = cubes.filter(c => c !== cube);
         score++;
         document.getElementById('score').innerText = `Score: ${score}`;
         // Adiciona outro cubo
@@ -156,4 +196,5 @@ navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audi
 
   </script>
 </body>
+
 </html>
