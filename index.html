@@ -2,331 +2,295 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
-  <title>AR Cardboard (WebXR stereo simulada)</title>
+  <title>AR Cardboard + Cloud Anchors (cliente)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <style>
     html,body { height:100%; margin:0; overflow:hidden; background:#000; color:#fff; font-family: Arial, sans-serif; }
-    #score { position: absolute; top:10px; right:10px; z-index:2;
-             background: rgba(0,0,0,0.5); padding:6px 10px; border-radius:6px; }
-    #info { position:absolute; left:10px; top:10px; z-index:2;
-           background: rgba(0,0,0,0.5); padding:6px 10px; border-radius:6px; max-width:55%; }
-    #startHint { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:2;
-                 background: rgba(0,0,0,0.6); padding:12px 18px; border-radius:8px; }
-    button { font-size:16px; padding:8px 12px; border-radius:6px; }
+    #ui { position: absolute; left:10px; top:10px; z-index:3; display:flex; gap:8px; flex-direction:column; }
+    button { font-size:14px; padding:8px 10px; border-radius:6px; border:0; background:#1e88e5; color:white; cursor:pointer; }
+    button.secondary { background:#455a64 }
+    #score { position: absolute; top:10px; right:10px; z-index:2; background: rgba(0,0,0,0.5); padding:6px 10px; border-radius:6px; }
+    #info { position:absolute; left:10px; bottom:10px; z-index:2; background: rgba(0,0,0,0.5); padding:6px 10px; border-radius:6px; max-width:60%; font-size:13px;}
   </style>
 </head>
 <body>
-  <div id="info">Toque na tela sobre o retículo para colocar cubos. Mire (gaze) no cubo para removê-lo.</div>
+  <div id="ui">
+    <button id="btn-enter-ar">Enter AR</button>
+    <button id="btn-host" class="secondary">Host Cloud Anchor</button>
+    <button id="btn-resolve" class="secondary">Resolve Cloud Anchor</button>
+    <input id="inputResolveId" placeholder="Digite cloudAnchorId para resolve" style="padding:8px;border-radius:6px;border:0;width:220px" />
+  </div>
+
   <div id="score">Score: 0</div>
-  <div id="startHint">Use o botão "Enter AR" que aparecerá (requer Chrome/Android com ARCore)</div>
+  <div id="info">Toque no retículo para criar um anchor. Use "Host" para enviar ao servidor. Para resolver, cole um ID e pressione Resolve.</div>
 
   <script type="module">
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.module.js';
     import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/webxr/ARButton.js';
 
-    let renderer, scene;
-    let mainCamera; // câmera usada para projeção (configurada por nós)
-    let cubes = [];
+    // ---- CONFIGURE AQUI SEU SERVER / FIREBASE ----
+    // Endpoint do servidor que implementa as chamadas ao Cloud Anchor Management API
+    const SERVER_BASE = 'https://SEU_SERVIDOR.example.com'; // <<-- substitua pelo seu endpoint
+    // Endpointes esperados:
+    // POST /hostAnchor  { /* request: pose, maybe image/features */ } -> { cloudAnchorId }
+    // POST /resolveAnchor { cloudAnchorId } -> { success: true, anchorPoseMatrix: [16 floats] } or more complex
+
+    let renderer, scene, mainCamera;
     let reticle, hitTestSource = null, hitTestSourceRequested = false;
+    let localAnchors = []; // lista de { anchor: XRAnchor, object: THREE.Object3D, cloudId? }
     let score = 0;
-    const raycaster = new THREE.Raycaster();
     const scoreEl = document.getElementById('score');
-    const startHint = document.getElementById('startHint');
+    const infoEl = document.getElementById('info');
 
-    // Parâmetros stereo
-    const IPD = 0.06; // distância interpupilar em metros (ajuste conforme necessário)
-    const EYE_SEPARATION = IPD; // distância total; cada olho = ±IPD/2
+    const btnEnter = document.getElementById('btn-enter-ar');
+    const btnHost = document.getElementById('btn-host');
+    const btnResolve = document.getElementById('btn-resolve');
+    const inputResolve = document.getElementById('inputResolveId');
 
-    init();
-    animate();
+    btnEnter.addEventListener('click', enterAR);
+    btnHost.addEventListener('click', hostSelectedAnchor);
+    btnResolve.addEventListener('click', resolveAnchorById);
 
-    function init() {
+    initScene();
+
+    function initScene() {
       scene = new THREE.Scene();
-
-      // câmera "fake" — usaremos manualmente as transforms baseadas no XR viewer pose
       mainCamera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-      renderer.setPixelRatio(window.devicePixelRatio);
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.xr.enabled = true;
       document.body.appendChild(renderer.domElement);
 
-      // ARButton requisitando hit-test e depth-sensing
-      const depthOptions = { usagePreference: ["cpu-optimized"], dataFormatPreference: ["luminance-alpha"] };
-
-      document.body.appendChild(ARButton.createButton(renderer, {
-        requiredFeatures: ['hit-test', 'depth-sensing'],
-        optionalFeatures: ['dom-overlay', 'local-floor', 'bounded-floor'],
-        domOverlay: { root: document.body },
-        depthSensing: depthOptions
-      }));
-
-      // luz
-      const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
+      const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1.0);
       scene.add(light);
 
       // reticle
-      const ringGeo = new THREE.RingGeometry(0.08, 0.11, 32).rotateX(-Math.PI / 2);
-      const ringMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+      const ringGeo = new THREE.RingGeometry(0.08, 0.11, 32).rotateX(-Math.PI/2);
+      const ringMat = new THREE.MeshBasicMaterial({ color:0x00ff00 });
       reticle = new THREE.Mesh(ringGeo, ringMat);
       reticle.matrixAutoUpdate = false;
       reticle.visible = false;
       scene.add(reticle);
 
-      // shadow plane
-      const shadowGeo = new THREE.PlaneGeometry(0.6, 0.6);
-      const shadowMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25 });
-      const shadowPlane = new THREE.Mesh(shadowGeo, shadowMat);
-      shadowPlane.rotateX(-Math.PI / 2);
-      shadowPlane.visible = false;
-      shadowPlane.name = "shadowPlane";
-      scene.add(shadowPlane);
-
-      // clique para adicionar cubo
-      renderer.domElement.addEventListener('click', () => {
-        if (reticle.visible) {
-          const pos = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
-          addCubeAt(pos);
-        }
+      window.addEventListener('resize', () => {
+        mainCamera.aspect = window.innerWidth / window.innerHeight;
+        mainCamera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
       });
 
-      window.addEventListener('resize', onWindowResize);
-
-      // adiciona alguns cubos iniciais opcionais (ou remova se não quiser)
-      for (let i = 0; i < 4; i++) addRandomCube();
+      // click para criar anchor local
+      renderer.domElement.addEventListener('click', async () => {
+        if (!reticle.visible) return;
+        const xrSession = renderer.xr.getSession();
+        if (!xrSession) return;
+        // cria um local anchor ligado ao reticle pose
+        const frame = renderer.xr.getFrame(); // not standard; instead we'll rely on requestAnimationFrame frame param later
+        // Usaremos requestAnimationFrame to create anchor via XRFrame inside render loop
+        // aqui apenas marcamos um pedido para criar anchor no próximo frame
+        pendingCreateAnchor = true;
+      });
     }
 
-    function onWindowResize() {
-      mainCamera.aspect = window.innerWidth / window.innerHeight;
-      mainCamera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
+    // state
+    let pendingCreateAnchor = false;
+    let selectedLocalAnchor = null;
+
+    async function enterAR() {
+      // request immersive-ar via ARButton to get proper permissions
+      document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures:['hit-test','anchors','depth-sensing'] }));
+      // start render loop
+      renderer.setAnimationLoop(onXRFrame);
     }
 
-    function addRandomCube() {
-      const size = 0.2;
-      const geom = new THREE.BoxGeometry(size, size, size);
-      const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.6, 0.5) });
-      const cube = new THREE.Mesh(geom, mat);
-      cube.position.set((Math.random() - 0.5) * 2, 0.2 + Math.random() * 0.6, - (1 + Math.random() * 2));
-      scene.add(cube);
-      cubes.push(cube);
+    // helper: create a visible box for anchor
+    function makeBox() {
+      const g = new THREE.BoxGeometry(0.12,0.12,0.12);
+      const m = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(Math.random(),0.6,0.5) });
+      const mesh = new THREE.Mesh(g,m);
+      return mesh;
     }
 
-    function addCubeAt(worldPos) {
-      const size = 0.18 + Math.random() * 0.12;
-      const geom = new THREE.BoxGeometry(size, size, size);
-      const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.6, 0.5) });
-      const cube = new THREE.Mesh(geom, mat);
-      cube.position.copy(worldPos);
-      cube.position.y += size / 2;
-      scene.add(cube);
-      cubes.push(cube);
-    }
-
-    function removeCube(cube) {
-      scene.remove(cube);
-      cubes = cubes.filter(c => c !== cube);
-      score++;
-      scoreEl.innerText = `Score: ${score}`;
-    }
-
-    // depth sampling (idêntico ao seu original)
-    function sampleDepthAt(frame, normalizedX, normalizedY) {
+    // chamada principal por frame
+    async function onXRFrame(time, xrFrame) {
       const session = renderer.xr.getSession();
-      if (!session) return null;
-      const refSpace = renderer.xr.getReferenceSpace ? renderer.xr.getReferenceSpace() : null;
-      const pose = frame.getViewerPose(refSpace);
-      if (!pose || !pose.views || pose.views.length === 0) return null;
-      const view = pose.views[0];
-      let depthInfo = null;
-      try { depthInfo = frame.getDepthInformation(view); } catch (e) { depthInfo = null; }
-      if (!depthInfo) return null;
-      const width = depthInfo.width, height = depthInfo.height;
-      const px = Math.floor((normalizedX * 0.5 + 0.5) * width);
-      const py = Math.floor((normalizedY * 0.5 + 0.5) * height);
-      const clampedX = Math.min(Math.max(px, 0), width - 1);
-      const clampedY = Math.min(Math.max(py, 0), height - 1);
-      let data = null;
-      try {
-        if (depthInfo.data) data = depthInfo.data;
-        else if (depthInfo.image) return null;
-        else return null;
-      } catch (e) { return null; }
-      const idx = clampedY * width + clampedX;
-      let valMeters = null;
-      if (data instanceof Float32Array) valMeters = data[idx];
-      else if (data instanceof Uint16Array) {
-        if (typeof depthInfo.rawValueToMeters === 'number') valMeters = data[idx] * depthInfo.rawValueToMeters;
-        else valMeters = data[idx] / 1000;
-      } else if (data.BYTES_PER_ELEMENT) {
-        try { const fv = new Float32Array(data.buffer || data); valMeters = fv[idx]; } catch (e) { valMeters = null; }
-      } else valMeters = null;
-      if (typeof valMeters !== 'number' || !isFinite(valMeters) || valMeters <= 0) return null;
-      return valMeters;
-    }
+      const refSpace = renderer.xr.getReferenceSpace();
 
-    function checkGaze() {
-      raycaster.setFromCamera(new THREE.Vector2(0, 0), mainCamera);
-      const intersects = raycaster.intersectObjects(cubes, false);
-      if (intersects.length > 0) removeCube(intersects[0].object);
-    }
+      // request hit-test once
+      if (!hitTestSourceRequested && session) {
+        try {
+          const viewerRef = await session.requestReferenceSpace('viewer');
+          hitTestSource = await session.requestHitTestSource({ space: viewerRef });
+        } catch(e) {
+          console.warn('hit-test request failed', e);
+        }
+        hitTestSourceRequested = true;
+        session.addEventListener('end', ()=> { hitTestSourceRequested=false; hitTestSource=null; });
+      }
 
-    // função util para aplicar offset de olho (em espaço do mundo) a partir de viewer pose
-    function computeEyeMatrix(viewPose, eyeOffsetX) {
-      // viewPose.transform: position (x,y,z) e orientation (qx,qy,qz,qw)
-      const pos = new THREE.Vector3(viewPose.transform.position.x, viewPose.transform.position.y, viewPose.transform.position.z);
-      const ori = new THREE.Quaternion(viewPose.transform.orientation.x, viewPose.transform.orientation.y, viewPose.transform.orientation.z, viewPose.transform.orientation.w);
-
-      // offset no espaço camera local (x para a direita)
-      const offsetLocal = new THREE.Vector3(eyeOffsetX, 0, 0);
-      // rotaciona offset pelo orientation para transformar para world
-      offsetLocal.applyQuaternion(ori);
-
-      const eyePos = new THREE.Vector3().copy(pos).add(offsetLocal);
-      const eyeQuat = ori.clone();
-
-      const matrix = new THREE.Matrix4();
-      matrix.compose(eyePos, eyeQuat, new THREE.Vector3(1, 1, 1));
-      return matrix;
-    }
-
-    // Render loop: vamos renderizar 2 vezes por frame (esquerdo + direito)
-    function animate() {
-      renderer.setAnimationLoop((time, frame) => {
-        // esconder dica quando entrar na sessão AR
-        const session = renderer.xr.getSession();
-        if (session) startHint.style.display = 'none';
-
-        if (frame) {
-          const refSpace = renderer.xr.getReferenceSpace();
-          const session = renderer.xr.getSession();
-
-          // request hit-test once
-          if (!hitTestSourceRequested && session) {
-            session.requestReferenceSpace('viewer').then((ref) => {
-              session.requestHitTestSource({ space: ref }).then((source) => {
-                hitTestSource = source;
-              }).catch(e => console.warn('requestHitTestSource falhou', e));
-            }).catch(e => console.warn('requestReferenceSpace(viewer) falhou', e));
-
-            session.addEventListener('end', () => { hitTestSourceRequested = false; hitTestSource = null; });
-            hitTestSourceRequested = true;
-          }
-
-          // atualizar reticle via hit-test
-          if (hitTestSource) {
-            const hitTestResults = frame.getHitTestResults(hitTestSource);
-            if (hitTestResults.length > 0) {
-              const hit = hitTestResults[0];
-              const pose = hit.getPose(refSpace);
-              if (pose) {
-                reticle.visible = true;
-                reticle.matrix.fromArray(pose.transform.matrix);
-                const shadow = scene.getObjectByName("shadowPlane");
-                if (shadow) {
-                  shadow.visible = true;
-                  shadow.position.set(pose.transform.position.x, pose.transform.position.y + 0.01, pose.transform.position.z);
-                  const q = pose.transform.orientation;
-                  shadow.quaternion.set(q.x, q.y, q.z, q.w);
-                }
-              } else {
-                reticle.visible = false;
-                const shadow = scene.getObjectByName("shadowPlane"); if (shadow) shadow.visible = false;
-              }
-            } else {
-              reticle.visible = false;
-              const shadow = scene.getObjectByName("shadowPlane"); if (shadow) shadow.visible = false;
-            }
-          }
-
-          // tentar depth/occlusion por amostragem (igual ao original)
-          try {
-            const pose = frame.getViewerPose(refSpace);
-            if (pose && pose.views && pose.views.length > 0) {
-              // usamos a primeira view para depth/hit-test
-              // projetar cubos e comparar depth
-              for (let i = 0; i < cubes.length; i++) {
-                const c = cubes[i];
-                const pos = c.position.clone();
-                pos.project(mainCamera);
-                const ndcX = pos.x, ndcY = pos.y;
-                const depthMeters = sampleDepthAt(frame, ndcX, ndcY);
-                if (depthMeters !== null) {
-                  const camPos = new THREE.Vector3(); mainCamera.getWorldPosition(camPos);
-                  const distToCube = camPos.distanceTo(c.position);
-                  if (depthMeters + 0.03 < distToCube) {
-                    c.material.transparent = true; c.material.opacity = 0.15; c.userData.occluded = true;
-                  } else {
-                    if (c.userData.occluded) { c.material.opacity = 1; c.material.transparent = false; c.userData.occluded = false; }
-                  }
-                } else {
-                  if (c.userData && c.userData.occluded) { c.material.opacity = 1; c.material.transparent = false; c.userData.occluded = false; }
-                }
-              }
-            }
-          } catch (e) { /* ignora erros de depth */ }
-
-          // check gaze (remove)
-          checkGaze();
-
-          // --- STEREO RENDER ---
-          // pegamos viewer pose (única) e criamos duas matrizes de olhos deslocadas
-          const pose = frame.getViewerPose(refSpace);
-          if (pose && pose.views && pose.views.length > 0) {
-            // base view (posição/orientação)
-            const baseView = pose.views[0];
-
-            // calculamos matrizes para cada olho
-            const half = EYE_SEPARATION / 2;
-            const leftMat = computeEyeMatrix(baseView, -half);
-            const rightMat = computeEyeMatrix(baseView, half);
-
-            // largura/altura em pixels
-            const canvas = renderer.domElement;
-            const w = canvas.width;
-            const h = canvas.height;
-            const eyeW = Math.floor(w / 2);
-
-            // salvar estado de clearing
-            renderer.autoClear = true;
-            renderer.clear();
-
-            // preparar projection (vamos usar mainCamera.projectionMatrix que já está ok)
-            // Atualizar matriz de projeção baseada na proporção full-screen
-            mainCamera.aspect = w / h;
-            mainCamera.updateProjectionMatrix();
-
-            // --- OLHO ESQUERDO ---
-            mainCamera.matrix.copy(leftMat);
-            mainCamera.matrix.decompose(mainCamera.position, mainCamera.quaternion, mainCamera.scale);
-            mainCamera.updateMatrixWorld(true);
-
-            renderer.setViewport(0, 0, eyeW, h);
-            renderer.render(scene, mainCamera);
-
-            // --- OLHO DIREITO ---
-            mainCamera.matrix.copy(rightMat);
-            mainCamera.matrix.decompose(mainCamera.position, mainCamera.quaternion, mainCamera.scale);
-            mainCamera.updateMatrixWorld(true);
-
-            renderer.setViewport(eyeW, 0, eyeW, h);
-            renderer.render(scene, mainCamera);
-
-            // reset viewport para full canvas pra UI overlay se necessário
-            renderer.setViewport(0, 0, w, h);
-          }
-        } else {
-          // se não estiver em frame XR (fora da sessão), apenas render normal
-          renderer.render(scene, mainCamera);
+      if (xrFrame) {
+        const pose = xrFrame.getViewerPose(refSpace);
+        // update reticle
+        if (hitTestSource) {
+          const hits = xrFrame.getHitTestResults(hitTestSource);
+          if (hits && hits.length>0) {
+            const hit = hits[0];
+            const hitPose = hit.getPose(refSpace);
+            if (hitPose) {
+              reticle.visible = true;
+              reticle.matrix.fromArray(hitPose.transform.matrix);
+            } else reticle.visible = false;
+          } else reticle.visible = false;
         }
 
-        // animação simples
-        cubes.forEach(c => { c.rotation.x += 0.005; c.rotation.y += 0.01; });
-      });
+        // if user clicked to create anchor, create local anchor now (using XRFrame.createAnchor on hit)
+        if (pendingCreateAnchor && hitTestSource) {
+          pendingCreateAnchor = false;
+          const hits = xrFrame.getHitTestResults(hitTestSource);
+          if (hits.length>0) {
+            try {
+              const anchor = await hits[0].createAnchor(); // XRHitTestResult.createAnchor()
+              // create a three.js mesh and attach to anchor via anchorPose every frame
+              const box = makeBox();
+              scene.add(box);
+              localAnchors.push({ anchor, object: box, cloudId: null });
+              selectedLocalAnchor = localAnchors[localAnchors.length-1];
+              infoEl.textContent = 'Anchor criado localmente. Agora clique Host para enviar ao servidor.';
+            } catch(e) {
+              console.warn('createAnchor failed', e);
+              infoEl.textContent = 'Falha ao criar anchor local: ' + e;
+            }
+          }
+        }
+
+        // Atualiza posição dos objetos ligados aos anchors
+        for (let i=localAnchors.length-1; i>=0; i--) {
+          const la = localAnchors[i];
+          try {
+            const pose = xrFrame.getPose(la.anchor.anchorSpace || la.anchor, refSpace);
+            if (pose) {
+              la.object.matrix.fromArray(pose.transform.matrix);
+              la.object.matrix.decompose(la.object.position, la.object.quaternion, la.object.scale);
+              la.object.visible = true;
+            } else {
+              la.object.visible = false;
+            }
+          } catch(e) {
+            // ignore
+          }
+        }
+      }
+
+      // render stereo (two viewports) — reusing your stereo approach: we render scene twice with camera offset
+      // note: WebXR already gives views per-eye for immersive-vr, but for immersive-ar the browser provides single view.
+      // We'll simulate stereo by shifting main camera around the viewer pose.
+      // get canvas pixel dims
+      const canvas = renderer.domElement;
+      const w = canvas.width, h = canvas.height;
+      const eyeW = Math.floor(w/2);
+
+      // compute viewer base pose if available
+      let baseMatrix = new THREE.Matrix4();
+      if (xrFrame) {
+        const vp = xrFrame.getViewerPose(refSpace);
+        if (vp && vp.views && vp.views.length>0) {
+          const view = vp.views[0];
+          baseMatrix.fromArray(view.transform.matrix);
+        } else {
+          baseMatrix.identity();
+        }
+      } else {
+        baseMatrix.identity();
+      }
+
+      // left eye
+      const half = 0.03; // eye separation in meters for render simulation (tweak as needed)
+      const leftMat = new THREE.Matrix4().copy(baseMatrix);
+      const rightMat = new THREE.Matrix4().copy(baseMatrix);
+
+      // translate left/right in camera-local space: apply small offset on x (camera right)
+      const leftOffset = new THREE.Matrix4().makeTranslation(-half, 0, 0);
+      const rightOffset = new THREE.Matrix4().makeTranslation(half, 0, 0);
+      leftMat.premultiply(leftOffset);
+      rightMat.premultiply(rightOffset);
+
+      // apply left
+      mainCamera.matrix.copy(leftMat);
+      mainCamera.matrix.decompose(mainCamera.position, mainCamera.quaternion, mainCamera.scale);
+      mainCamera.updateMatrixWorld(true);
+      renderer.setViewport(0,0,eyeW,h);
+      renderer.render(scene, mainCamera);
+
+      // apply right
+      mainCamera.matrix.copy(rightMat);
+      mainCamera.matrix.decompose(mainCamera.position, mainCamera.quaternion, mainCamera.scale);
+      mainCamera.updateMatrixWorld(true);
+      renderer.setViewport(eyeW,0,eyeW,h);
+      renderer.render(scene, mainCamera);
+
+      // restore viewport for overlays if needed
+      renderer.setViewport(0,0,w,h);
     }
 
-    // fim do script
+    // HOST: envia anchor local ao servidor para criar Cloud Anchor
+    async function hostSelectedAnchor() {
+      if (!selectedLocalAnchor) { infoEl.textContent = 'Nenhum anchor selecionado.'; return; }
+      infoEl.textContent = 'Enviando anchor ao servidor para host...';
+      try {
+        // extraímos a matrix do anchor (pose no refSpace) — precisamos do frame para isso:
+        // O jeito mais robusto: pedir ao servidor que transforme anchor local em cloud anchor,
+        // mas WebXR não tem um método built-in para enviar "feature data" para cloud.
+        // Abordagem aqui: enviaremos a matrix (pose) para o servidor; o servidor pode pedir mais informações.
+        // Pegamos última pose que aplicamos no objeto:
+        const matrix = selectedLocalAnchor.object.matrix.toArray();
+
+        const resp = await fetch(SERVER_BASE + '/hostAnchor', {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json' },
+          body: JSON.stringify({ matrix })
+        });
+        const data = await resp.json();
+        if (data && data.cloudAnchorId) {
+          selectedLocalAnchor.cloudId = data.cloudAnchorId;
+          infoEl.textContent = 'Anchor hospedado. cloudId: ' + data.cloudAnchorId;
+          // opcional: salvar em Firebase ou banco público para outros usuários resolverem
+        } else {
+          infoEl.textContent = 'Falha ao hospedar anchor: resposta inválida';
+        }
+      } catch (e) {
+        console.error(e);
+        infoEl.textContent = 'Erro ao hospedar anchor: ' + e.message;
+      }
+    }
+
+    // RESOLVE: pede ao servidor o pose de um cloudAnchorId e cria um anchor local com esse pose
+    async function resolveAnchorById() {
+      const id = inputResolve.value.trim();
+      if (!id) { infoEl.textContent = 'Cole um cloudAnchorId no campo.'; return; }
+      infoEl.textContent = 'Pedindo ao servidor para resolver ' + id;
+      try {
+        const resp = await fetch(SERVER_BASE + '/resolveAnchor', {
+          method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ cloudAnchorId: id })
+        });
+        const data = await resp.json();
+        if (data && data.anchorMatrix) {
+          // convert array[16] -> matrix
+          const m = new THREE.Matrix4().fromArray(data.anchorMatrix);
+          // cria um objeto na cena com essa matrix
+          const box = makeBox();
+          box.matrix.copy(m); box.matrix.decompose(box.position, box.quaternion, box.scale); box.matrixAutoUpdate=false;
+          scene.add(box);
+          infoEl.textContent = 'Anchor resolvido e objeto criado localmente.';
+        } else {
+          infoEl.textContent = 'Falha ao resolver anchor: resposta inválida';
+        }
+      } catch (e) {
+        console.error(e);
+        infoEl.textContent = 'Erro ao resolver anchor: ' + e.message;
+      }
+    }
+
+    // utilitarios extras (score etc) omitidos por brevidade
   </script>
 </body>
 </html>
