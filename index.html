@@ -53,27 +53,27 @@
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.module.js';
     import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/webxr/VRButton.js';
 
-    document.getElementById('startCamera').addEventListener('click', () => {
-      const video = document.createElement('video');
-      video.autoplay = true;
-      video.muted = true;
-      video.playsInline = true;
+document.getElementById('startCamera').addEventListener('click', () => {
+  const video = document.createElement('video');
+  video.autoplay = true;
+  video.muted = true;
+  video.playsInline = true;
 
-      navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
-        .then(stream => {
-          video.srcObject = stream;
-          video.play();
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
+    .then(stream => {
+      video.srcObject = stream;
+      video.play();
 
-          const videoTexture = new THREE.VideoTexture(video);
-          scene.background = videoTexture;
+      const videoTexture = new THREE.VideoTexture(video);
+      scene.background = videoTexture;
 
-          // Esconde o botão depois de ativar a câmera
-          document.getElementById('startCamera').style.display = 'none';
-        })
-        .catch(err => {
-          console.warn("Não foi possível acessar a câmera:", err);
-        });
+      // Esconde o botão depois de ativar a câmera
+      document.getElementById('startCamera').style.display = 'none';
+    })
+    .catch(err => {
+      console.warn("Não foi possível acessar a câmera:", err);
     });
+});
 
     let camera, scene, renderer;
     let cubes = [];
@@ -110,16 +110,6 @@
       scene.background = new THREE.Color(0x202020);
 
       camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
-      renderer.xr.addEventListener('sessionstart', () => {
-        const xrCamera = renderer.xr.getCamera(camera); // pega a câmera XR
-        xrCamera.cameras.forEach((eyeCam) => {
-          if (eyeCam.isPerspectiveCamera) {
-            // Ajusta a posição horizontal do olho
-            eyeCam.position.x *= 1.2; // aumenta a distância entre os olhos em 20%
-          }
-        });
-      });
-
       camera.position.z = 0;
 
       renderer = new THREE.WebGLRenderer({ antialias: true });
