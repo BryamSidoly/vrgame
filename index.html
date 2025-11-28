@@ -1,290 +1,200 @@
 <!doctype html>
 <html lang="pt-BR">
-
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <title>Cardboard WebGL</title>
-  <style>
-    html,
-    body {
-      height: 100%;
-      margin: 0;
-      background: #000;
-      color: #fff;
-      font-family: Inter, system-ui, sans-serif
-    }
-
-    #ui {
-      position: fixed;
-      left: 12px;
-      top: 12px;
-      z-index: 50;
-      display: flex;
-      gap: 8px
-    }
-
-    button {
-      padding: 8px 10px;
-      border: 0;
-      border-radius: 8px;
-      background: #1e88e5;
-      color: white;
-      cursor: pointer
-    }
-
-    button.secondary {
-      background: #455a64
-    }
-
-    #msg {
-      position: fixed;
-      left: 12px;
-      bottom: 12px;
-      background: rgba(0, 0, 0, 0.35);
-      padding: 8px 10px;
-      border-radius: 8px;
-      font-size: 13px;
-      z-index: 70
-    }
-
-    canvas {
-      display: block;
-      width: 100vw;
-      height: 100vh
-    }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>Cardboard WebGL + Mãos</title>
+<style>
+  html, body { height: 100%; margin: 0; background: #000; color: #fff; font-family: Inter, system-ui, sans-serif }
+  #ui { position: fixed; left: 12px; top: 12px; z-index: 50; display: flex; gap: 8px }
+  button { padding: 8px 10px; border: 0; border-radius: 8px; background: #1e88e5; color: white; cursor: pointer }
+  button.secondary { background: #455a64 }
+  #msg { position: fixed; left: 12px; bottom: 12px; background: rgba(0,0,0,0.35); padding: 8px 10px; border-radius: 8px; font-size: 13px; z-index: 70 }
+  canvas { display: block; width: 100vw; height: 100vh }
+</style>
 </head>
-
 <body>
-  <div id="ui">
-    <button id="btn-ar">Iniciar AR</button>
-    <button id="btn-exit" class="secondary">Sair</button>
-  </div>
-  <div id="msg">Aguardando...</div>
-  <canvas id="glcanvas"></canvas>
+<div id="ui">
+  <button id="btn-ar">Iniciar AR</button>
+  <button id="btn-exit" class="secondary">Sair</button>
+</div>
+<div id="msg">Aguardando...</div>
+<canvas id="glcanvas"></canvas>
 
-  <script>
-    // ---- helpers GL ----
-    function compileShader(gl, src, type) {
-      const s = gl.createShader(type);
-      gl.shaderSource(s, src);
-      gl.compileShader(s);
-      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-        throw new Error('Shader compile error: ' + gl.getShaderInfoLog(s));
-      }
-      return s;
-    }
+<script type="module">
+import {Hands} from 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js';
+import {Camera} from 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js';
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.module.js';
+import {GLTFLoader} from 'https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/loaders/GLTFLoader.js';
 
-    function createProgram(gl, vsSrc, fsSrc) {
-      const vs = compileShader(gl, vsSrc, gl.VERTEX_SHADER);
-      const fs = compileShader(gl, fsSrc, gl.FRAGMENT_SHADER);
-      const p = gl.createProgram();
-      gl.attachShader(p, vs);
-      gl.attachShader(p, fs);
-      gl.linkProgram(p);
-      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
-        throw new Error('Program link error: ' + gl.getProgramInfoLog(p));
-      }
-      return p;
-    }
+const canvas = document.getElementById('glcanvas');
+const msg = document.getElementById('msg');
+const btnAr = document.getElementById('btn-ar');
+const btnExit = document.getElementById('btn-exit');
 
-    // ---- Shaders ----
-    const vertexSrc = `
-    attribute vec2 a_pos;
-    varying vec2 v_uv;
-    void main(){
-      v_uv = a_pos * 0.5 + 0.5; // from [-1,1] to [0,1]
-      gl_Position = vec4(a_pos, 0.0, 1.0);
-    }
-    `;
+let running = false;
+let video = document.createElement('video');
+video.autoplay = true;
+video.playsInline = true;
+video.muted = true;
+let stream = null;
 
-    const fragmentSrc = `
-    precision mediump float;
-    uniform sampler2D u_tex;
-    uniform float u_k1;
-    uniform float u_k2;
-    uniform float u_aspect;
-    uniform vec2 u_lensCenter;
-    varying vec2 v_uv;
+// ----- Three.js Scene -----
+const scene = new THREE.Scene();
+const renderer = new THREE.WebGLRenderer({canvas, alpha:true});
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
 
-    void main(){
-    vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
-      vec2 centered = uv - u_lensCenter;
-      centered.x *= u_aspect;
-      
-      float r = length(centered);
-      float factor = 1.0 + u_k1 * r * r + u_k2 * r * r * r * r;
-      vec2 distorted = centered * factor;
-      distorted.x /= u_aspect;
-      vec2 finalUV = distorted + u_lensCenter;
+const camera3D = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.1, 1000);
+camera3D.position.z = 500;
 
-      if(finalUV.x < 0.0 || finalUV.x > 1.0 || finalUV.y < 0.0 || finalUV.y > 1.0){
-        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-      } else {
-        gl_FragColor = texture2D(u_tex, finalUV);
-      }
-    }
-    `;
+let sword;
+const loader = new GLTFLoader();
+loader.load('https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf', (gltf)=>{
+  sword = gltf.scene;
+  sword.scale.set(50,50,50);
+  scene.add(sword);
+});
 
-    const canvas = document.getElementById('glcanvas');
-    const gl = canvas.getContext('webgl', { antialias: true }) || canvas.getContext('experimental-webgl');
-    if (!gl) alert('WebGL não disponível.');
+// ----- MediaPipe Hands -----
+const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+hands.setOptions({maxNumHands: 2, modelComplexity:1, minDetectionConfidence:0.7, minTrackingConfidence:0.7});
 
-    const program = createProgram(gl, vertexSrc, fragmentSrc);
-    gl.useProgram(program);
+let handLandmarks = null;
+hands.onResults(results => {
+  if(results.multiHandLandmarks.length>0){
+    handLandmarks = results.multiHandLandmarks[0]; // pegando a primeira mão
+  } else {
+    handLandmarks = null;
+  }
+});
 
-    const quadVerts = new Float32Array([
-      -1, -1,
-      1, -1,
-      -1, 1,
-      -1, 1,
-      1, -1,
-      1, 1
-    ]);
+const cam = new Camera(video, {onFrame: async()=>{ await hands.send({image:video}); }, width:1280, height:720});
 
-    const vbo = gl.createBuffer();
+// ----- Canvas VR Distortion Shader (WebGL puro) -----
+const gl = canvas.getContext('webgl', {antialias:true}) || canvas.getContext('experimental-webgl');
+if(!gl) alert('WebGL não disponível.');
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-    gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+const vertexSrc = `attribute vec2 a_pos; varying vec2 v_uv; void main(){v_uv = a_pos*0.5+0.5; gl_Position=vec4(a_pos,0,1);}`;
+const fragmentSrc = `
+precision mediump float;
+uniform sampler2D u_tex;
+uniform float u_k1; uniform float u_k2; uniform float u_aspect; uniform vec2 u_lensCenter;
+varying vec2 v_uv;
+void main(){
+  vec2 uv = vec2(v_uv.x,1.0-v_uv.y);
+  vec2 centered = uv-u_lensCenter; centered.x*=u_aspect;
+  float r=length(centered);
+  float factor = 1.0+u_k1*r*r+u_k2*r*r*r*r;
+  vec2 distorted=centered*factor; distorted.x/=u_aspect;
+  vec2 finalUV=distorted+u_lensCenter;
+  if(finalUV.x<0.0||finalUV.x>1.0||finalUV.y<0.0||finalUV.y>1.0){
+    gl_FragColor=vec4(0,0,0,1);
+  } else { gl_FragColor=texture2D(u_tex, finalUV); }
+}`;
+function compileShader(gl, src, type){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s); if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){throw new Error(gl.getShaderInfoLog(s));} return s;}
+function createProgram(gl,vs,fs){ const vsS=compileShader(gl,vs,gl.VERTEX_SHADER); const fsS=compileShader(gl,fs,gl.FRAGMENT_SHADER); const p=gl.createProgram(); gl.attachShader(p,vsS); gl.attachShader(p,fsS); gl.linkProgram(p); if(!gl.getProgramParameter(p,gl.LINK_STATUS)){throw new Error(gl.getProgramInfoLog(p));} return p;}
+const program = createProgram(gl, vertexSrc, fragmentSrc);
+gl.useProgram(program);
+const quadVerts = new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,vbo);
+gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+const a_pos = gl.getAttribLocation(program,'a_pos');
+gl.enableVertexAttribArray(a_pos);
+gl.vertexAttribPointer(a_pos,2,gl.FLOAT,false,0,0);
+const u_tex=gl.getUniformLocation(program,'u_tex');
+const u_k1=gl.getUniformLocation(program,'u_k1');
+const u_k2=gl.getUniformLocation(program,'u_k2');
+const u_aspect=gl.getUniformLocation(program,'u_aspect');
+const u_lensCenter=gl.getUniformLocation(program,'u_lensCenter');
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    const a_pos = gl.getAttribLocation(program, 'a_pos');
-    
-    gl.enableVertexAttribArray(a_pos);
-    gl.vertexAttribPointer(a_pos, 2, gl.FLOAT, false, 0, 0);
+let K1=0.34,K2=0.55;
 
-    const u_tex = gl.getUniformLocation(program, 'u_tex');
-    const u_k1 = gl.getUniformLocation(program, 'u_k1');
-    const u_k2 = gl.getUniformLocation(program, 'u_k2');
-    const u_aspect = gl.getUniformLocation(program, 'u_aspect');
-    const u_lensCenter = gl.getUniformLocation(program, 'u_lensCenter');
+// ---- Helpers ----
+function resizeCanvasToDisplaySize(){ const dpr = window.devicePixelRatio||1; const w=Math.floor(window.innerWidth*dpr); const h=Math.floor(window.innerHeight*dpr); if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}}
+function normalizedToCanvas(lm, w, h){ return {x:lm.x*w, y:lm.y*h, z:lm.z};}
 
-    const tex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+// ---- Loop principal ----
+function renderFrame(){
+  if(!running) return;
+  if(video.readyState<2){ requestAnimationFrame(renderFrame); return; }
 
-    const video = document.createElement('video');
-    video.autoplay = true;
-    video.playsInline = true;
-    video.muted = true;
+  // Atualiza textura do vídeo
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  try{ gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,video);} 
+  catch(e){ gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,video.videoWidth,video.videoHeight,0,gl.RGBA,gl.UNSIGNED_BYTE,null);}
+  
+  const w=canvas.width, h=canvas.height;
+  const eyeW=Math.floor(w/2), eyeH=h;
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
 
-    let stream = null;
-    let running = false;
+  gl.uniform1i(u_tex,0); gl.uniform1f(u_k1,K1); gl.uniform1f(u_k2,K2);
+  const videoAspect=(video.videoWidth&&video.videoHeight)?((eyeW/eyeH)*(video.videoHeight/video.videoWidth)):(eyeW/eyeH);
+  const leftCenter=0.25,rightCenter=0.75, ipd=0.4;
 
-    const msg = document.getElementById('msg');
-    const btnAr = document.getElementById('btn-ar');
-    const btnExit = document.getElementById('btn-exit');
+  // Olho esquerdo
+  gl.viewport(0,0,eyeW,eyeH);
+  gl.uniform1f(u_aspect,videoAspect);
+  gl.uniform2f(u_lensCenter,leftCenter+ipd,0.5);
+  gl.drawArrays(gl.TRIANGLES,0,6);
 
-    async function startAR() {
-      msg.textContent = 'Abrindo câmera…';
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 30 }
-          },
-          audio: false
-        });
-        video.srcObject = stream;
-        await video.play();
-        running = true;
-        msg.textContent = 'AR ativo';
-        try { await document.documentElement.requestFullscreen(); } catch (e) { }
-        resizeAndLoop();
-      } catch (err) {
-        msg.textContent = 'Erro: ' + (err.message || err);
-      }
-    }
+  // Olho direito
+  gl.viewport(eyeW,0,eyeW,eyeH);
+  gl.uniform1f(u_aspect,videoAspect);
+  gl.uniform2f(u_lensCenter,rightCenter-ipd,0.5);
+  gl.drawArrays(gl.TRIANGLES,0,6);
 
-    function stopAll() {
-      if (stream) stream.getTracks().forEach(t => t.stop());
-      stream = null;
-      running = false;
-      msg.textContent = 'Parado';
-      try { document.exitFullscreen(); } catch (e) { }
-    }
+  // Atualiza posição da espada
+  if(sword && handLandmarks){
+    const tip = normalizedToCanvas(handLandmarks[8], w, h);
+    const wrist = normalizedToCanvas(handLandmarks[0], w, h);
+    sword.position.set(tip.x - w/2, h/2 - tip.y, -tip.z*500);
+    const dir = new THREE.Vector3(tip.x-wrist.x, wrist.y-tip.y, -tip.z*500);
+    sword.lookAt(dir);
+  }
 
-    btnAr.addEventListener('click', startAR);
-    btnExit.addEventListener('click', stopAll);
+  renderer.render(scene, camera3D);
+  requestAnimationFrame(renderFrame);
+}
 
-    function resizeCanvasToDisplaySize() {
-      const dpr = window.devicePixelRatio || 1;
-      const width = Math.floor(window.innerWidth * dpr);
-      const height = Math.floor(window.innerHeight * dpr);
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
-      }
-    }
+// ---- Start/Stop ----
+async function startAR(){
+  msg.textContent='Abrindo câmera…';
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}}, audio:false});
+    video.srcObject = stream;
+    await video.play();
+    running=true; msg.textContent='AR ativo';
+    try{ await document.documentElement.requestFullscreen(); } catch(e){}
+    cam.start();
+    resizeAndLoop();
+  } catch(err){ msg.textContent='Erro: '+(err.message||err);}
+}
 
-    let K1 = 0.34;
-    let K2 = 0.55;
+function stopAll(){
+  if(stream) stream.getTracks().forEach(t=>t.stop());
+  stream=null; running=false; msg.textContent='Parado';
+  try{ document.exitFullscreen(); }catch(e){}
+}
 
-    function renderFrame() {
-      if (!running) return;
-      if (video.readyState < 2) { requestAnimationFrame(renderFrame); return; }
+btnAr.addEventListener('click', startAR);
+btnExit.addEventListener('click', stopAll);
 
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      try {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
-      } catch (e) {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, video.videoWidth, video.videoHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-      }
+function resizeAndLoop(){
+  resizeCanvasToDisplaySize();
+  requestAnimationFrame(function loop(){if(!running) return; resizeCanvasToDisplaySize(); requestAnimationFrame(loop);});
+  requestAnimationFrame(renderFrame);
+}
 
-      const w = canvas.width;
-      const h = canvas.height;
-      const eyeW = Math.floor(w / 2);
-      const eyeH = h;
-
-      gl.clearColor(0, 0, 0, 1);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      gl.viewport(0, 0, eyeW, eyeH);
-
-      gl.uniform1i(u_tex, 0);
-      gl.uniform1f(u_k1, K1);
-      gl.uniform1f(u_k2, K2);
-
-      const videoAspect = (video.videoWidth && video.videoHeight) ? ((eyeW / eyeH) * (video.videoHeight / video.videoWidth)) : (eyeW / eyeH);
-
-      const leftCenter = 0.25;  // metade da metade esquerda
-      const rightCenter = 0.75;  // metade da metade direita
-      const ipd = 0.4;
-
-      // ----- OLHO ESQUERDO -----
-      gl.viewport(0, 0, eyeW, eyeH);
-      gl.uniform1f(u_aspect, videoAspect);
-      gl.uniform2f(u_lensCenter, leftCenter + ipd, 0.5);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
-
-      // ----- OLHO DIREITO -----
-      gl.viewport(eyeW, 0, eyeW, eyeH);
-      gl.uniform1f(u_aspect, videoAspect);
-      gl.uniform2f(u_lensCenter, rightCenter - ipd, 0.5);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
-
-      requestAnimationFrame(renderFrame);
-    }
-
-    function resizeAndLoop() {
-      resizeCanvasToDisplaySize();
-      requestAnimationFrame(function loop() {
-        if (!running) return;
-        resizeCanvasToDisplaySize();
-        requestAnimationFrame(loop);
-      });
-      requestAnimationFrame(renderFrame);
-    }
-
-    window.setDistortion = (k1, k2) => { K1 = k1; K2 = k2; console.log('k1,k2 =', k1, k2); };
-
-    console.log('Iniciar: clique "Iniciar AR". Para ajustar distorção em runtime use setDistortion(k1,k2) no console. Ex.: setDistortion(-0.34,0.55)');
-
-  </script>
+window.setDistortion=(k1,k2)=>{ K1=k1; K2=k2; console.log('k1,k2=',k1,k2);}
+</script>
 </body>
-
 </html>
