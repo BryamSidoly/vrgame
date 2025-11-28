@@ -1,200 +1,90 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-<title>Cardboard WebGL + Mãos</title>
-<style>
-  html, body { height: 100%; margin: 0; background: #000; color: #fff; font-family: Inter, system-ui, sans-serif }
-  #ui { position: fixed; left: 12px; top: 12px; z-index: 50; display: flex; gap: 8px }
-  button { padding: 8px 10px; border: 0; border-radius: 8px; background: #1e88e5; color: white; cursor: pointer }
-  button.secondary { background: #455a64 }
-  #msg { position: fixed; left: 12px; bottom: 12px; background: rgba(0,0,0,0.35); padding: 8px 10px; border-radius: 8px; font-size: 13px; z-index: 70 }
-  canvas { display: block; width: 100vw; height: 100vh }
-</style>
+    <meta charset="UTF-8">
+    <title>VR Protótipo Cardboard</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        #info {
+            position: absolute; top: 10px; left: 10px;
+            color: white; background: rgba(0,0,0,0.5); padding: 5px 10px;
+            font-family: sans-serif;
+            z-index: 1;
+        }
+    </style>
 </head>
 <body>
-<div id="ui">
-  <button id="btn-ar">Iniciar AR</button>
-  <button id="btn-exit" class="secondary">Sair</button>
-</div>
-<div id="msg">Aguardando...</div>
-<canvas id="glcanvas"></canvas>
+    <div id="info">Mova o celular para girar a câmera.</div>
 
-<script type="module">
-import {Hands} from 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js';
-import {Camera} from 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js';
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.module.js';
-import {GLTFLoader} from 'https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/loaders/GLTFLoader.js';
+    <!-- Polyfill WebXR -->
+    <script src="https://unpkg.com/webxr-polyfill@latest/build/webxr-polyfill.min.js"></script>
 
-const canvas = document.getElementById('glcanvas');
-const msg = document.getElementById('msg');
-const btnAr = document.getElementById('btn-ar');
-const btnExit = document.getElementById('btn-exit');
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/webxr/VRButton.js"></script>
 
-let running = false;
-let video = document.createElement('video');
-video.autoplay = true;
-video.playsInline = true;
-video.muted = true;
-let stream = null;
+    <script>
+        let camera, scene, renderer;
+        let cube;
 
-// ----- Three.js Scene -----
-const scene = new THREE.Scene();
-const renderer = new THREE.WebGLRenderer({canvas, alpha:true});
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(window.devicePixelRatio);
+        init();
+        animate();
 
-const camera3D = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.1, 1000);
-camera3D.position.z = 500;
+        function init() {
+            // Cena
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x202020);
 
-let sword;
-const loader = new GLTFLoader();
-loader.load('https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf', (gltf)=>{
-  sword = gltf.scene;
-  sword.scale.set(50,50,50);
-  scene.add(sword);
-});
+            // Câmera
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.1, 1000);
+            camera.position.z = 3;
 
-// ----- MediaPipe Hands -----
-const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
-hands.setOptions({maxNumHands: 2, modelComplexity:1, minDetectionConfidence:0.7, minTrackingConfidence:0.7});
+            // Renderizador
+            renderer = new THREE.WebGLRenderer({antialias:true});
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.xr.enabled = true;
+            document.body.appendChild(renderer.domElement);
 
-let handLandmarks = null;
-hands.onResults(results => {
-  if(results.multiHandLandmarks.length>0){
-    handLandmarks = results.multiHandLandmarks[0]; // pegando a primeira mão
-  } else {
-    handLandmarks = null;
-  }
-});
+            // Botão VR
+            document.body.appendChild(VRButton.createButton(renderer));
 
-const cam = new Camera(video, {onFrame: async()=>{ await hands.send({image:video}); }, width:1280, height:720});
+            // Objeto
+            const geometry = new THREE.BoxGeometry(1,1,1);
+            const material = new THREE.MeshNormalMaterial();
+            cube = new THREE.Mesh(geometry, material);
+            scene.add(cube);
 
-// ----- Canvas VR Distortion Shader (WebGL puro) -----
-const gl = canvas.getContext('webgl', {antialias:true}) || canvas.getContext('experimental-webgl');
-if(!gl) alert('WebGL não disponível.');
+            // Luz
+            const light = new THREE.HemisphereLight(0xffffff, 0x444444);
+            light.position.set(0, 20, 0);
+            scene.add(light);
 
-const vertexSrc = `attribute vec2 a_pos; varying vec2 v_uv; void main(){v_uv = a_pos*0.5+0.5; gl_Position=vec4(a_pos,0,1);}`;
-const fragmentSrc = `
-precision mediump float;
-uniform sampler2D u_tex;
-uniform float u_k1; uniform float u_k2; uniform float u_aspect; uniform vec2 u_lensCenter;
-varying vec2 v_uv;
-void main(){
-  vec2 uv = vec2(v_uv.x,1.0-v_uv.y);
-  vec2 centered = uv-u_lensCenter; centered.x*=u_aspect;
-  float r=length(centered);
-  float factor = 1.0+u_k1*r*r+u_k2*r*r*r*r;
-  vec2 distorted=centered*factor; distorted.x/=u_aspect;
-  vec2 finalUV=distorted+u_lensCenter;
-  if(finalUV.x<0.0||finalUV.x>1.0||finalUV.y<0.0||finalUV.y>1.0){
-    gl_FragColor=vec4(0,0,0,1);
-  } else { gl_FragColor=texture2D(u_tex, finalUV); }
-}`;
-function compileShader(gl, src, type){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s); if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){throw new Error(gl.getShaderInfoLog(s));} return s;}
-function createProgram(gl,vs,fs){ const vsS=compileShader(gl,vs,gl.VERTEX_SHADER); const fsS=compileShader(gl,fs,gl.FRAGMENT_SHADER); const p=gl.createProgram(); gl.attachShader(p,vsS); gl.attachShader(p,fsS); gl.linkProgram(p); if(!gl.getProgramParameter(p,gl.LINK_STATUS)){throw new Error(gl.getProgramInfoLog(p));} return p;}
-const program = createProgram(gl, vertexSrc, fragmentSrc);
-gl.useProgram(program);
-const quadVerts = new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]);
-const vbo = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER,vbo);
-gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
-const a_pos = gl.getAttribLocation(program,'a_pos');
-gl.enableVertexAttribArray(a_pos);
-gl.vertexAttribPointer(a_pos,2,gl.FLOAT,false,0,0);
-const u_tex=gl.getUniformLocation(program,'u_tex');
-const u_k1=gl.getUniformLocation(program,'u_k1');
-const u_k2=gl.getUniformLocation(program,'u_k2');
-const u_aspect=gl.getUniformLocation(program,'u_aspect');
-const u_lensCenter=gl.getUniformLocation(program,'u_lensCenter');
-const tex = gl.createTexture();
-gl.bindTexture(gl.TEXTURE_2D, tex);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            // Giroscópio fallback (para celulares sem WebXR)
+            window.addEventListener("deviceorientation", (event) => {
+                const alpha = event.alpha ? THREE.MathUtils.degToRad(event.alpha) : 0;
+                const beta  = event.beta  ? THREE.MathUtils.degToRad(event.beta)  : 0;
+                const gamma = event.gamma ? THREE.MathUtils.degToRad(event.gamma) : 0;
 
-let K1=0.34,K2=0.55;
+                // Atualiza rotação da câmera
+                camera.rotation.set(beta, alpha, -gamma, "ZXY");
+            });
 
-// ---- Helpers ----
-function resizeCanvasToDisplaySize(){ const dpr = window.devicePixelRatio||1; const w=Math.floor(window.innerWidth*dpr); const h=Math.floor(window.innerHeight*dpr); if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}}
-function normalizedToCanvas(lm, w, h){ return {x:lm.x*w, y:lm.y*h, z:lm.z};}
+            // Ajuste do tamanho
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
 
-// ---- Loop principal ----
-function renderFrame(){
-  if(!running) return;
-  if(video.readyState<2){ requestAnimationFrame(renderFrame); return; }
+        function animate() {
+            renderer.setAnimationLoop(() => {
+                cube.rotation.x += 0.01;
+                cube.rotation.y += 0.01;
 
-  // Atualiza textura do vídeo
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  try{ gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,video);} 
-  catch(e){ gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,video.videoWidth,video.videoHeight,0,gl.RGBA,gl.UNSIGNED_BYTE,null);}
-  
-  const w=canvas.width, h=canvas.height;
-  const eyeW=Math.floor(w/2), eyeH=h;
-  gl.clearColor(0,0,0,1);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-
-  gl.uniform1i(u_tex,0); gl.uniform1f(u_k1,K1); gl.uniform1f(u_k2,K2);
-  const videoAspect=(video.videoWidth&&video.videoHeight)?((eyeW/eyeH)*(video.videoHeight/video.videoWidth)):(eyeW/eyeH);
-  const leftCenter=0.25,rightCenter=0.75, ipd=0.4;
-
-  // Olho esquerdo
-  gl.viewport(0,0,eyeW,eyeH);
-  gl.uniform1f(u_aspect,videoAspect);
-  gl.uniform2f(u_lensCenter,leftCenter+ipd,0.5);
-  gl.drawArrays(gl.TRIANGLES,0,6);
-
-  // Olho direito
-  gl.viewport(eyeW,0,eyeW,eyeH);
-  gl.uniform1f(u_aspect,videoAspect);
-  gl.uniform2f(u_lensCenter,rightCenter-ipd,0.5);
-  gl.drawArrays(gl.TRIANGLES,0,6);
-
-  // Atualiza posição da espada
-  if(sword && handLandmarks){
-    const tip = normalizedToCanvas(handLandmarks[8], w, h);
-    const wrist = normalizedToCanvas(handLandmarks[0], w, h);
-    sword.position.set(tip.x - w/2, h/2 - tip.y, -tip.z*500);
-    const dir = new THREE.Vector3(tip.x-wrist.x, wrist.y-tip.y, -tip.z*500);
-    sword.lookAt(dir);
-  }
-
-  renderer.render(scene, camera3D);
-  requestAnimationFrame(renderFrame);
-}
-
-// ---- Start/Stop ----
-async function startAR(){
-  msg.textContent='Abrindo câmera…';
-  try{
-    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}}, audio:false});
-    video.srcObject = stream;
-    await video.play();
-    running=true; msg.textContent='AR ativo';
-    try{ await document.documentElement.requestFullscreen(); } catch(e){}
-    cam.start();
-    resizeAndLoop();
-  } catch(err){ msg.textContent='Erro: '+(err.message||err);}
-}
-
-function stopAll(){
-  if(stream) stream.getTracks().forEach(t=>t.stop());
-  stream=null; running=false; msg.textContent='Parado';
-  try{ document.exitFullscreen(); }catch(e){}
-}
-
-btnAr.addEventListener('click', startAR);
-btnExit.addEventListener('click', stopAll);
-
-function resizeAndLoop(){
-  resizeCanvasToDisplaySize();
-  requestAnimationFrame(function loop(){if(!running) return; resizeCanvasToDisplaySize(); requestAnimationFrame(loop);});
-  requestAnimationFrame(renderFrame);
-}
-
-window.setDistortion=(k1,k2)=>{ K1=k1; K2=k2; console.log('k1,k2=',k1,k2);}
-</script>
+                renderer.render(scene, camera);
+            });
+        }
+    </script>
 </body>
 </html>
