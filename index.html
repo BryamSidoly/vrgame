@@ -105,8 +105,8 @@ function drawFisheye(ctx, canvas) {
 
       const ratio = nr / (r || 1);
 
-      const sx = Math.round(cx + dx * ratio);
-      const sy = Math.round(cy + dy * ratio);
+      const sx = (cx + dx * ratio) | 0;
+const sy = (cy + dy * ratio) | 0;
 
       const i = (y*w + x)*4;
 
@@ -151,8 +151,16 @@ async function startAR() {
 
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode:{ ideal:"environment" }, width:{ ideal:1920 }, height:{ ideal:1080 } },
-      audio: false
+video: {
+  facingMode: { ideal: "environment" },
+  width:  { ideal: 2560 },
+  height: { ideal: 1440 },
+  frameRate: { ideal: 60 },
+  advanced: [
+    { noiseSuppression: false },
+    { echoCancellation: false }
+  ]
+},      audio: false
     });
 
     video.srcObject = stream;
