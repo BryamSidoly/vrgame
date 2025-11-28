@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
-  <title>AR com Hit-test + Depth (Exemplo)</title>
+  <title>AR Cardboard (WebXR stereo simulada)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <style>
     html,body { height:100%; margin:0; overflow:hidden; background:#000; color:#fff; font-family: Arial, sans-serif; }
@@ -24,17 +24,18 @@
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.module.js';
     import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/webxr/ARButton.js';
 
-    let camera, scene, renderer;
-    let reticle;
-    let hitTestSource = null;
-    let hitTestSourceRequested = false;
+    let renderer, scene;
+    let mainCamera; // câmera usada para projeção (configurada por nós)
     let cubes = [];
+    let reticle, hitTestSource = null, hitTestSourceRequested = false;
     let score = 0;
     const raycaster = new THREE.Raycaster();
-
-    // Info UI
     const scoreEl = document.getElementById('score');
     const startHint = document.getElementById('startHint');
+
+    // Parâmetros stereo
+    const IPD = 0.06; // distância interpupilar em metros (ajuste conforme necessário)
+    const EYE_SEPARATION = IPD; // distância total; cada olho = ±IPD/2
 
     init();
     animate();
@@ -42,7 +43,8 @@
     function init() {
       scene = new THREE.Scene();
 
-      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+      // câmera "fake" — usaremos manualmente as transforms baseadas no XR viewer pose
+      mainCamera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setPixelRatio(window.devicePixelRatio);
@@ -50,12 +52,8 @@
       renderer.xr.enabled = true;
       document.body.appendChild(renderer.domElement);
 
-      // ARButton com depth-sensing requisitado.
-      // depthSensing: { usagePreference, dataFormatPreference } pode ajudar navegadores a escolher formato.
-      const depthOptions = {
-        usagePreference: ["cpu-optimized"],
-        dataFormatPreference: ["luminance-alpha"]
-      };
+      // ARButton requisitando hit-test e depth-sensing
+      const depthOptions = { usagePreference: ["cpu-optimized"], dataFormatPreference: ["luminance-alpha"] };
 
       document.body.appendChild(ARButton.createButton(renderer, {
         requiredFeatures: ['hit-test', 'depth-sensing'],
@@ -64,11 +62,11 @@
         depthSensing: depthOptions
       }));
 
-      // Luz simples
+      // luz
       const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
       scene.add(light);
 
-      // Retículo (ring) que aparece sobre a superfície detectada
+      // reticle
       const ringGeo = new THREE.RingGeometry(0.08, 0.11, 32).rotateX(-Math.PI / 2);
       const ringMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
       reticle = new THREE.Mesh(ringGeo, ringMat);
@@ -76,7 +74,7 @@
       reticle.visible = false;
       scene.add(reticle);
 
-      // Sombra projetada (simples) - um plano transparente que segue o reticle quando usar
+      // shadow plane
       const shadowGeo = new THREE.PlaneGeometry(0.6, 0.6);
       const shadowMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25 });
       const shadowPlane = new THREE.Mesh(shadowGeo, shadowMat);
@@ -85,124 +83,47 @@
       shadowPlane.name = "shadowPlane";
       scene.add(shadowPlane);
 
-      // Clique/tap para colocar cubo (quando reticle visível)
-      renderer.domElement.addEventListener('click', (ev) => {
+      // clique para adicionar cubo
+      renderer.domElement.addEventListener('click', () => {
         if (reticle.visible) {
-          const pos = new THREE.Vector3();
-          pos.setFromMatrixPosition(reticle.matrix);
+          const pos = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
           addCubeAt(pos);
         }
       });
 
-      // resize
       window.addEventListener('resize', onWindowResize);
 
-      // Remover cube por gaze (olhar no centro)
-      // Também suportamos toque longo se quiser futuramente.
+      // adiciona alguns cubos iniciais opcionais (ou remova se não quiser)
+      for (let i = 0; i < 4; i++) addRandomCube();
     }
 
     function onWindowResize() {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
+      mainCamera.aspect = window.innerWidth / window.innerHeight;
+      mainCamera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     }
 
-    // Adiciona cubo com pequena animação
+    function addRandomCube() {
+      const size = 0.2;
+      const geom = new THREE.BoxGeometry(size, size, size);
+      const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.6, 0.5) });
+      const cube = new THREE.Mesh(geom, mat);
+      cube.position.set((Math.random() - 0.5) * 2, 0.2 + Math.random() * 0.6, - (1 + Math.random() * 2));
+      scene.add(cube);
+      cubes.push(cube);
+    }
+
     function addCubeAt(worldPos) {
       const size = 0.18 + Math.random() * 0.12;
       const geom = new THREE.BoxGeometry(size, size, size);
       const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(Math.random(), 0.6, 0.5) });
       const cube = new THREE.Mesh(geom, mat);
-      cube.castShadow = true;
-
       cube.position.copy(worldPos);
-      cube.position.y += size / 2; // sobe para ficar sobre a superfície
+      cube.position.y += size / 2;
       scene.add(cube);
       cubes.push(cube);
-      // update score? only when removed
     }
 
-    // Função utilitária para tentar ler depth info do XRFrame para uma coordenada NDC [-1,1]
-    // Retorna distância em metros ou null.
-    function sampleDepthAt(frame, normalizedX, normalizedY) {
-      // Precisamos de session, reference space e views
-      const session = renderer.xr.getSession();
-      if (!session) return null;
-
-      // Ao trabalhar com multiscreen/VR, usamos a primeira view (normalmente a única no AR)
-      const pose = frame.getViewerPose(renderer.xr.getReferenceSpace ? renderer.xr.getReferenceSpace() : null);
-      if (!pose || !pose.views || pose.views.length === 0) return null;
-      const view = pose.views[0];
-
-      // Tenta pegar depth info para a view
-      let depthInfo = null;
-      try {
-        depthInfo = frame.getDepthInformation(view);
-      } catch (e) {
-        // getDepthInformation pode lançar se não suportado
-        depthInfo = null;
-      }
-      if (!depthInfo) return null;
-
-      // depthInfo: tem width,height, data, rawValueToMeters (dependendo do impl)
-      const width = depthInfo.width;
-      const height = depthInfo.height;
-
-      // Converter normalized coords [-1,1] para pixel coords no depth map
-      const px = Math.floor((normalizedX * 0.5 + 0.5) * width);
-      const py = Math.floor((normalizedY * 0.5 + 0.5) * height);
-      const clampedX = Math.min(Math.max(px, 0), width - 1);
-      const clampedY = Math.min(Math.max(py, 0), height - 1);
-
-      // A API real pode expor depthInfo.data como TypedArray view
-      // Tenta várias abordagens defensivas
-      let data = null;
-      try {
-        if (depthInfo.data) {
-          // depthInfo.data pode ser an ArrayBufferView (e.g., Uint16Array or Float32Array)
-          data = depthInfo.data;
-        } else if (depthInfo.image) {
-          // Em algumas implementações, depthInfo.image existe -> não lidamos com isso aqui
-          return null;
-        } else {
-          return null;
-        }
-      } catch (e) {
-        return null;
-      }
-
-      // Tentar deduzir como extrair valor:
-      // - Se for Float32Array, cada pixel é 1 valor (meters)
-      // - Se for Uint16Array, pode precisar multiplicar por rawValueToMeters
-      let idx = clampedY * width + clampedX;
-      let valMeters = null;
-
-      if (data instanceof Float32Array) {
-        valMeters = data[idx]; // já em metros (provável)
-      } else if (data instanceof Uint16Array) {
-        if (typeof depthInfo.rawValueToMeters === 'number') {
-          valMeters = data[idx] * depthInfo.rawValueToMeters;
-        } else {
-          // tentativa genérica: tratar como mm -> converter para metros
-          valMeters = data[idx] / 1000;
-        }
-      } else if (data.BYTES_PER_ELEMENT) {
-        // tenta interpretar via buffer como Float32Array
-        try {
-          const floatView = new Float32Array(data.buffer || data);
-          valMeters = floatView[idx];
-        } catch (e) {
-          valMeters = null;
-        }
-      } else {
-        valMeters = null;
-      }
-
-      if (typeof valMeters !== 'number' || !isFinite(valMeters) || valMeters <= 0) return null;
-      return valMeters;
-    }
-
-    // Remove cube (com atualização de score)
     function removeCube(cube) {
       scene.remove(cube);
       cubes = cubes.filter(c => c !== cube);
@@ -210,49 +131,86 @@
       scoreEl.innerText = `Score: ${score}`;
     }
 
-    // Verifica gaze: um ray do centro da tela (0,0 em NDC)
-    function checkGaze(frame) {
-      // usamos raycaster setFromCamera com (0,0)
-      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
-      const intersects = raycaster.intersectObjects(cubes, false);
-      if (intersects.length > 0) {
-        // remove o primeiro
-        const cube = intersects[0].object;
-        removeCube(cube);
-      }
+    // depth sampling (idêntico ao seu original)
+    function sampleDepthAt(frame, normalizedX, normalizedY) {
+      const session = renderer.xr.getSession();
+      if (!session) return null;
+      const refSpace = renderer.xr.getReferenceSpace ? renderer.xr.getReferenceSpace() : null;
+      const pose = frame.getViewerPose(refSpace);
+      if (!pose || !pose.views || pose.views.length === 0) return null;
+      const view = pose.views[0];
+      let depthInfo = null;
+      try { depthInfo = frame.getDepthInformation(view); } catch (e) { depthInfo = null; }
+      if (!depthInfo) return null;
+      const width = depthInfo.width, height = depthInfo.height;
+      const px = Math.floor((normalizedX * 0.5 + 0.5) * width);
+      const py = Math.floor((normalizedY * 0.5 + 0.5) * height);
+      const clampedX = Math.min(Math.max(px, 0), width - 1);
+      const clampedY = Math.min(Math.max(py, 0), height - 1);
+      let data = null;
+      try {
+        if (depthInfo.data) data = depthInfo.data;
+        else if (depthInfo.image) return null;
+        else return null;
+      } catch (e) { return null; }
+      const idx = clampedY * width + clampedX;
+      let valMeters = null;
+      if (data instanceof Float32Array) valMeters = data[idx];
+      else if (data instanceof Uint16Array) {
+        if (typeof depthInfo.rawValueToMeters === 'number') valMeters = data[idx] * depthInfo.rawValueToMeters;
+        else valMeters = data[idx] / 1000;
+      } else if (data.BYTES_PER_ELEMENT) {
+        try { const fv = new Float32Array(data.buffer || data); valMeters = fv[idx]; } catch (e) { valMeters = null; }
+      } else valMeters = null;
+      if (typeof valMeters !== 'number' || !isFinite(valMeters) || valMeters <= 0) return null;
+      return valMeters;
     }
 
-    // render loop com hit-test + tentativa de usar depth-sensing para oclusão
+    function checkGaze() {
+      raycaster.setFromCamera(new THREE.Vector2(0, 0), mainCamera);
+      const intersects = raycaster.intersectObjects(cubes, false);
+      if (intersects.length > 0) removeCube(intersects[0].object);
+    }
+
+    // função util para aplicar offset de olho (em espaço do mundo) a partir de viewer pose
+    function computeEyeMatrix(viewPose, eyeOffsetX) {
+      // viewPose.transform: position (x,y,z) e orientation (qx,qy,qz,qw)
+      const pos = new THREE.Vector3(viewPose.transform.position.x, viewPose.transform.position.y, viewPose.transform.position.z);
+      const ori = new THREE.Quaternion(viewPose.transform.orientation.x, viewPose.transform.orientation.y, viewPose.transform.orientation.z, viewPose.transform.orientation.w);
+
+      // offset no espaço camera local (x para a direita)
+      const offsetLocal = new THREE.Vector3(eyeOffsetX, 0, 0);
+      // rotaciona offset pelo orientation para transformar para world
+      offsetLocal.applyQuaternion(ori);
+
+      const eyePos = new THREE.Vector3().copy(pos).add(offsetLocal);
+      const eyeQuat = ori.clone();
+
+      const matrix = new THREE.Matrix4();
+      matrix.compose(eyePos, eyeQuat, new THREE.Vector3(1, 1, 1));
+      return matrix;
+    }
+
+    // Render loop: vamos renderizar 2 vezes por frame (esquerdo + direito)
     function animate() {
       renderer.setAnimationLoop((time, frame) => {
-        // esconder dica assim que entrar na sessão AR
+        // esconder dica quando entrar na sessão AR
         const session = renderer.xr.getSession();
-        if (session) {
-          startHint.style.display = 'none';
-        }
+        if (session) startHint.style.display = 'none';
 
         if (frame) {
-          const referenceSpace = renderer.xr.getReferenceSpace();
+          const refSpace = renderer.xr.getReferenceSpace();
           const session = renderer.xr.getSession();
 
-          // hit-test: request once
-          if (!hitTestSourceRequested) {
-            session.requestReferenceSpace('viewer').then((refSpace) => {
-              session.requestHitTestSource({ space: refSpace }).then((source) => {
+          // request hit-test once
+          if (!hitTestSourceRequested && session) {
+            session.requestReferenceSpace('viewer').then((ref) => {
+              session.requestHitTestSource({ space: ref }).then((source) => {
                 hitTestSource = source;
-              }).catch(err => {
-                console.warn('requestHitTestSource falhou:', err);
-              });
-            }).catch(err => {
-              console.warn('requestReferenceSpace(viewer) falhou:', err);
-            });
+              }).catch(e => console.warn('requestHitTestSource falhou', e));
+            }).catch(e => console.warn('requestReferenceSpace(viewer) falhou', e));
 
-            // tenta limpar hitTestSource quando a sessão terminar
-            session.addEventListener('end', () => {
-              hitTestSourceRequested = false;
-              hitTestSource = null;
-            });
-
+            session.addEventListener('end', () => { hitTestSourceRequested = false; hitTestSource = null; });
             hitTestSourceRequested = true;
           }
 
@@ -261,11 +219,10 @@
             const hitTestResults = frame.getHitTestResults(hitTestSource);
             if (hitTestResults.length > 0) {
               const hit = hitTestResults[0];
-              const pose = hit.getPose(referenceSpace);
+              const pose = hit.getPose(refSpace);
               if (pose) {
                 reticle.visible = true;
                 reticle.matrix.fromArray(pose.transform.matrix);
-                // mover sombra
                 const shadow = scene.getObjectByName("shadowPlane");
                 if (shadow) {
                   shadow.visible = true;
@@ -275,83 +232,101 @@
                 }
               } else {
                 reticle.visible = false;
-                const shadow = scene.getObjectByName("shadowPlane");
-                if (shadow) shadow.visible = false;
+                const shadow = scene.getObjectByName("shadowPlane"); if (shadow) shadow.visible = false;
               }
             } else {
               reticle.visible = false;
-              const shadow = scene.getObjectByName("shadowPlane");
-              if (shadow) shadow.visible = false;
+              const shadow = scene.getObjectByName("shadowPlane"); if (shadow) shadow.visible = false;
             }
           }
 
-          // Verifica gaze para remover cubo (apenas quando em AR)
-          checkGaze(frame);
-
-          // TENTA aplicar oclusão simples usando Depth API:
-          // Estratégia: para cada cubo, projetamos para NDC, amostramos o depth map e comparamos distâncias.
-          // Se depthReal < distanciaDoCubo (por exemplo, a um limiar), o cubo está atrás de um objeto real -> tornamos parcialmente invisível.
+          // tentar depth/occlusion por amostragem (igual ao original)
           try {
-            const pose = frame.getViewerPose(referenceSpace);
+            const pose = frame.getViewerPose(refSpace);
             if (pose && pose.views && pose.views.length > 0) {
-              const view = pose.views[0];
-
-              // Para cada cubo, projetar e comparar
+              // usamos a primeira view para depth/hit-test
+              // projetar cubos e comparar depth
               for (let i = 0; i < cubes.length; i++) {
                 const c = cubes[i];
-                // transformar world -> NDC
                 const pos = c.position.clone();
-                pos.project(camera); // agora pos.x,pos.y em NDC [-1,1], pos.z é depth NDC
-                const ndcX = pos.x;
-                const ndcY = pos.y;
-
-                // amostra depth (em metros) no ponto do mapa de profundidade
+                pos.project(mainCamera);
+                const ndcX = pos.x, ndcY = pos.y;
                 const depthMeters = sampleDepthAt(frame, ndcX, ndcY);
-
                 if (depthMeters !== null) {
-                  // distância do camera ao cubo
-                  const cameraPos = new THREE.Vector3();
-                  camera.getWorldPosition(cameraPos);
-                  const distToCube = cameraPos.distanceTo(c.position);
-
-                  // Se a profundidade real for menor que a distância até o cubo -> algo real está na frente
+                  const camPos = new THREE.Vector3(); mainCamera.getWorldPosition(camPos);
+                  const distToCube = camPos.distanceTo(c.position);
                   if (depthMeters + 0.03 < distToCube) {
-                    // esconder ou tornar semi-transparente
-                    c.material.transparent = true;
-                    c.material.opacity = 0.15;
-                    c.userData.occluded = true;
+                    c.material.transparent = true; c.material.opacity = 0.15; c.userData.occluded = true;
                   } else {
-                    if (c.userData.occluded) {
-                      c.material.opacity = 1.0;
-                      c.material.transparent = false;
-                      c.userData.occluded = false;
-                    }
+                    if (c.userData.occluded) { c.material.opacity = 1; c.material.transparent = false; c.userData.occluded = false; }
                   }
                 } else {
-                  // sem depth info -> nada a fazer
-                  if (c.userData && c.userData.occluded) {
-                    c.material.opacity = 1.0;
-                    c.material.transparent = false;
-                    c.userData.occluded = false;
-                  }
+                  if (c.userData && c.userData.occluded) { c.material.opacity = 1; c.material.transparent = false; c.userData.occluded = false; }
                 }
               }
             }
-          } catch (err) {
-            // se algo quebrar ao tentar depth sampling, ignoramos (não deve interromper AR)
-            // console.warn("Erro ao usar depth-sensing:", err);
+          } catch (e) { /* ignora erros de depth */ }
+
+          // check gaze (remove)
+          checkGaze();
+
+          // --- STEREO RENDER ---
+          // pegamos viewer pose (única) e criamos duas matrizes de olhos deslocadas
+          const pose = frame.getViewerPose(refSpace);
+          if (pose && pose.views && pose.views.length > 0) {
+            // base view (posição/orientação)
+            const baseView = pose.views[0];
+
+            // calculamos matrizes para cada olho
+            const half = EYE_SEPARATION / 2;
+            const leftMat = computeEyeMatrix(baseView, -half);
+            const rightMat = computeEyeMatrix(baseView, half);
+
+            // largura/altura em pixels
+            const canvas = renderer.domElement;
+            const w = canvas.width;
+            const h = canvas.height;
+            const eyeW = Math.floor(w / 2);
+
+            // salvar estado de clearing
+            renderer.autoClear = true;
+            renderer.clear();
+
+            // preparar projection (vamos usar mainCamera.projectionMatrix que já está ok)
+            // Atualizar matriz de projeção baseada na proporção full-screen
+            mainCamera.aspect = w / h;
+            mainCamera.updateProjectionMatrix();
+
+            // --- OLHO ESQUERDO ---
+            mainCamera.matrix.copy(leftMat);
+            mainCamera.matrix.decompose(mainCamera.position, mainCamera.quaternion, mainCamera.scale);
+            mainCamera.updateMatrixWorld(true);
+
+            renderer.setViewport(0, 0, eyeW, h);
+            renderer.render(scene, mainCamera);
+
+            // --- OLHO DIREITO ---
+            mainCamera.matrix.copy(rightMat);
+            mainCamera.matrix.decompose(mainCamera.position, mainCamera.quaternion, mainCamera.scale);
+            mainCamera.updateMatrixWorld(true);
+
+            renderer.setViewport(eyeW, 0, eyeW, h);
+            renderer.render(scene, mainCamera);
+
+            // reset viewport para full canvas pra UI overlay se necessário
+            renderer.setViewport(0, 0, w, h);
           }
+        } else {
+          // se não estiver em frame XR (fora da sessão), apenas render normal
+          renderer.render(scene, mainCamera);
         }
 
-        // Rotaciona levemente cubos para efeito visual (não afeta colocação)
-        cubes.forEach(c => {
-          c.rotation.x += 0.005;
-          c.rotation.y += 0.01;
-        });
-
-        renderer.render(scene, camera);
+        // animação simples
+        cubes.forEach(c => { c.rotation.x += 0.005; c.rotation.y += 0.01; });
       });
     }
+
+    // fim do script
   </script>
 </body>
 </html>
