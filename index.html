@@ -50,247 +50,194 @@ const vertexSrc = `
 attribute vec2 a_pos;
 varying vec2 v_uv;
 void main(){
-  v_uv = a_pos * 0.5 + 0.5;
+  v_uv = a_pos * 0.5 + 0.5; // from [-1,1] to [0,1]
   gl_Position = vec4(a_pos, 0.0, 1.0);
 }
 `;
 
 const fragmentSrc = `
 precision mediump float;
-
-uniform sampler2D u_texLeft;
-uniform sampler2D u_texRight;
-
+uniform sampler2D u_tex;
 uniform float u_k1;
 uniform float u_k2;
-uniform float u_aspect;
-uniform vec2  u_lensCenter;
-uniform int   u_eye;
-
+uniform float u_aspect; // ratio = (width/height) of eye viewport
+uniform vec2 u_lensCenter; // center (0.5,0.5) typically
 varying vec2 v_uv;
 
 void main(){
-    vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
+  // transform uv so center is (0,0) and scale for aspect
+vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
+  vec2 centered = uv - u_lensCenter;        // range roughly [-0.5,0.5]
+  centered.x *= u_aspect;                   // correct for non-square pixels
+  
+  float r = length(centered);
+  // radial distortion function (inverse mapping)
+  float factor = 1.0 + u_k1 * r * r + u_k2 * r * r * r * r;
+  vec2 distorted = centered * factor;
+  distorted.x /= u_aspect; // undo aspect scaling
+  vec2 finalUV = distorted + u_lensCenter;
 
-    vec2 centered = uv - u_lensCenter;
-    centered.x *= u_aspect;
-
-    float r = length(centered);
-    float factor = 1.0 + u_k1*r*r + u_k2*r*r*r*r;
-
-    vec2 distorted = centered * factor;
-    distorted.x /= u_aspect;
-    vec2 finalUV = distorted + u_lensCenter;
-
-    if(finalUV.x < 0.0 || finalUV.x > 1.0 ||
-       finalUV.y < 0.0 || finalUV.y > 1.0){
-        gl_FragColor = vec4(0,0,0,1);
-        return;
-    }
-
-    if(u_eye == 0)
-        gl_FragColor = texture2D(u_texLeft, finalUV);
-    else
-        gl_FragColor = texture2D(u_texRight, finalUV);
+  // if outside texture, draw black
+  if(finalUV.x < 0.0 || finalUV.x > 1.0 || finalUV.y < 0.0 || finalUV.y > 1.0){
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+  } else {
+    gl_FragColor = texture2D(u_tex, finalUV);
+  }
 }
 `;
 
 const canvas = document.getElementById('glcanvas');
 const gl = canvas.getContext('webgl', { antialias: true }) || canvas.getContext('experimental-webgl');
+if(!gl) alert('WebGL não disponível.');
 
 const program = createProgram(gl, vertexSrc, fragmentSrc);
 gl.useProgram(program);
 
+const quadVerts = new Float32Array([
+  -1, -1,
+   1, -1,
+  -1,  1,
+  -1,  1,
+   1, -1,
+   1,  1
+]);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
 const a_pos = gl.getAttribLocation(program, 'a_pos');
+gl.enableVertexAttribArray(a_pos);
+gl.vertexAttribPointer(a_pos, 2, gl.FLOAT, false, 0, 0);
+
+const u_tex = gl.getUniformLocation(program, 'u_tex');
 const u_k1  = gl.getUniformLocation(program, 'u_k1');
 const u_k2  = gl.getUniformLocation(program, 'u_k2');
 const u_aspect = gl.getUniformLocation(program, 'u_aspect');
 const u_lensCenter = gl.getUniformLocation(program, 'u_lensCenter');
-const u_texLeft  = gl.getUniformLocation(program, 'u_texLeft');
-const u_texRight = gl.getUniformLocation(program, 'u_texRight');
-const u_eye      = gl.getUniformLocation(program, 'u_eye');
 
-// bind texture units
-gl.uniform1i(u_texLeft, 0);
-gl.uniform1i(u_texRight, 1);
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-// Quad
-const quad = new Float32Array([
-  -1,-1,  1,-1,  -1,1,
-  -1,1,   1,-1,   1,1
-]);
-const vbo = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
-gl.enableVertexAttribArray(a_pos);
-gl.vertexAttribPointer(a_pos, 2, gl.FLOAT, false, 0, 0);
-
-// Video elements
-const videoLeft = document.createElement('video');
-videoLeft.autoplay = true;
-videoLeft.playsInline = true;
-videoLeft.muted = true;
-
-const videoRight = document.createElement('video');
-videoRight.autoplay = true;
-videoRight.playsInline = true;
-videoRight.muted = true;
-
-const videoSingle = document.createElement('video');
-videoSingle.autoplay = true;
-videoSingle.playsInline = true;
-videoSingle.muted = true;
-
-// Textures
-function makeTex(){
-  const t = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, t);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  return t;
-}
-const texLeft  = makeTex();
-const texRight = makeTex();
-const texSingle = makeTex();
+const video = document.createElement('video');
+video.autoplay = true;
+video.playsInline = true;
+video.muted = true;
 
 let stream = null;
 let running = false;
 
 const msg = document.getElementById('msg');
-
-// --- tentar abrir 2 câmeras traseiras ---
-async function tryStereoCameras(){
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  const cams = devices.filter(d => d.kind === "videoinput");
-  const backs = cams.filter(c =>
-    c.label.toLowerCase().includes("back") ||
-    c.label.toLowerCase().includes("rear")
-  );
-
-  if(backs.length < 2) return null;
-
-  try{
-    const left = await navigator.mediaDevices.getUserMedia({
-      video:{ deviceId: backs[0].deviceId }
-    });
-    const right = await navigator.mediaDevices.getUserMedia({
-      video:{ deviceId: backs[1].deviceId }
-    });
-    return { left, right };
-  }catch(e){
-    return null;
-  }
-}
+const btnAr = document.getElementById('btn-ar');
+const btnExit = document.getElementById('btn-exit');
 
 async function startAR(){
-  msg.textContent = "Procurando 2 câmeras...";
-  const stereo = await tryStereoCameras();
-
-  if(stereo){
-    videoLeft.srcObject  = stereo.left;
-    videoRight.srcObject = stereo.right;
-    stream = stereo;
-    msg.textContent = "Estéreo REAL ativo";
+  msg.textContent = 'Abrindo câmera…';
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 2560 }, 
+        height: { ideal: 1440 },
+        frameRate: { ideal: 60 }
+      },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
     running = true;
-    videoLeft.play(); videoRight.play();
+    msg.textContent = 'AR ativo';
+    try { await document.documentElement.requestFullscreen(); } catch(e){}
     resizeAndLoop();
-    return;
+  } catch(err){
+    msg.textContent = 'Erro: ' + (err.message || err);
   }
-
-  msg.textContent = "Só 1 câmera. Abrindo...";
-  stream = await navigator.mediaDevices.getUserMedia({
-    video:{ facingMode:"environment", width:{ideal:2560}, height:{ideal:1440} }
-  });
-  videoSingle.srcObject = stream;
-  videoSingle.play();
-  running = true;
-  resizeAndLoop();
 }
 
-document.getElementById('btn-ar').onclick = startAR;
-document.getElementById('btn-exit').onclick = () => {
-  if(stream){
-    if(stream.left) stream.left.getTracks().forEach(t=>t.stop());
-    if(stream.right) stream.right.getTracks().forEach(t=>t.stop());
-    if(stream.getTracks) stream.getTracks().forEach(t=>t.stop());
-  }
+function stopAll(){
+  if(stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
   running = false;
-  msg.textContent = "Parado";
-};
+  msg.textContent = 'Parado';
+  try { document.exitFullscreen(); } catch(e){}
+}
 
-function resizeCanvas(){
+btnAr.addEventListener('click', startAR);
+btnExit.addEventListener('click', stopAll);
+
+function resizeCanvasToDisplaySize(){
   const dpr = window.devicePixelRatio || 1;
-  const w = innerWidth * dpr;
-  const h = innerHeight * dpr;
-  if(canvas.width!==w || canvas.height!==h){
-    canvas.width = w; canvas.height = h;
+  const width = Math.floor(window.innerWidth * dpr);
+  const height = Math.floor(window.innerHeight * dpr);
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
   }
 }
 
 let K1 = 0.34;
 let K2 = 0.55;
-let ipd = 0.03;
 
-function render(){
-  if(!running){ requestAnimationFrame(render); return; }
+function renderFrame(){
+  if(!running) return;
+  if(video.readyState < 2){ requestAnimationFrame(renderFrame); return; }
 
-  resizeCanvas();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  try {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+  } catch(e){
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, video.videoWidth, video.videoHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  }
 
   const w = canvas.width;
   const h = canvas.height;
-  const eyeW = w/2;
+  const eyeW = Math.floor(w / 2);
   const eyeH = h;
 
-  gl.viewport(0,0,w,h);
   gl.clearColor(0,0,0,1);
   gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.viewport(0, 0, eyeW, eyeH);
 
-  if(stream.left && stream.right){
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, texLeft);
-      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,videoLeft);
-
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, texRight);
-      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,videoRight);
-  }else{
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, texSingle);
-      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,videoSingle);
-  }
-
+  gl.uniform1i(u_tex, 0);
   gl.uniform1f(u_k1, K1);
   gl.uniform1f(u_k2, K2);
 
-  const leftCenter  = 0.25;
-  const rightCenter = 0.75;
+ const videoAspect = (video.videoWidth && video.videoHeight) ? ( (eyeW/eyeH) * (video.videoHeight / video.videoWidth) ) : (eyeW/eyeH);
 
-  // Left eye
-  gl.viewport(0,0,eyeW,eyeH);
-  gl.uniform1i(u_eye, 0);
-  gl.uniform1f(u_aspect, 1.0);
-  gl.uniform2f(u_lensCenter, leftCenter + ipd, 0.5);
-  gl.drawArrays(gl.TRIANGLES,0,6);
+const leftCenter  = 0.25;  // metade da metade esquerda
+const rightCenter = 0.75;  // metade da metade direita
+const ipd = 0.3;          // ajuste fino do alinhamento horizontal
 
-  // Right eye
-  gl.viewport(eyeW,0,eyeW,eyeH);
-  gl.uniform1i(u_eye, stream.left ? 1 : 0);
-  gl.uniform1f(u_aspect, 1.0);
-  gl.uniform2f(u_lensCenter, rightCenter - ipd, 0.5);
-  gl.drawArrays(gl.TRIANGLES,0,6);
+// ----- OLHO ESQUERDO -----
+gl.viewport(0, 0, eyeW, eyeH);
+gl.uniform1f(u_aspect, videoAspect);
+gl.uniform2f(u_lensCenter, leftCenter + ipd, 0.5);
+gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-  requestAnimationFrame(render);
+// ----- OLHO DIREITO -----
+gl.viewport(eyeW, 0, eyeW, eyeH);
+gl.uniform1f(u_aspect, videoAspect);
+gl.uniform2f(u_lensCenter, rightCenter - ipd, 0.5);
+gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+  requestAnimationFrame(renderFrame);
 }
 
 function resizeAndLoop(){
-  resizeCanvas();
-  render();
+  resizeCanvasToDisplaySize();
+  requestAnimationFrame(function loop(){
+    if(!running) return;
+    resizeCanvasToDisplaySize();
+    requestAnimationFrame(loop);
+  });
+  requestAnimationFrame(renderFrame);
 }
 
-window.setDistortion = (k1,k2)=>{K1=k1;K2=k2;};
-window.setIPD=(v)=>{ipd=v;};
+window.setDistortion = (k1,k2) => { K1 = k1; K2 = k2; console.log('k1,k2 =',k1,k2); };
+
+console.log('Iniciar: clique "Iniciar AR". Para ajustar distorção em runtime use setDistortion(k1,k2) no console. Ex.: setDistortion(-0.34,0.55)');
 
 </script>
 </body>
