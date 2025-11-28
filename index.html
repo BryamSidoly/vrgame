@@ -207,8 +207,8 @@ function renderFrame(){
  const videoAspect = (video.videoWidth && video.videoHeight) ? ( (eyeW/eyeH) * (video.videoHeight / video.videoWidth) ) : (eyeW/eyeH);
 
 const leftCenter  = 0.25;  // metade da metade esquerda
-const rightCenter = 0.90;  // metade da metade direita
-const ipd = 0.37;          // ajuste fino do alinhamento horizontal
+const rightCenter = 0.75;  // metade da metade direita
+const ipd = 0.4;          // ajuste fino do alinhamento horizontal
 
 // ----- OLHO ESQUERDO -----
 gl.viewport(0, 0, eyeW, eyeH);
