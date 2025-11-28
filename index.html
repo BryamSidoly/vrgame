@@ -121,10 +121,48 @@ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+// para duas câmeras reais
+const videoLeft = document.createElement('video');
+videoLeft.autoplay = true;
+videoLeft.playsInline = true;
+videoLeft.muted = true;
+
+const videoRight = document.createElement('video');
+videoRight.autoplay = true;
+videoRight.playsInline = true;
+videoRight.muted = true;
+
+// duas texturas WebGL
+const texLeft = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, texLeft);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+const texRight = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, texRight);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+
 const video = document.createElement('video');
 video.autoplay = true;
 video.playsInline = true;
 video.muted = true;
+
+function setupStereoVideos(leftStream, rightStream) {
+  videoLeft.srcObject  = leftStream;
+  videoRight.srcObject = rightStream;
+
+  videoLeft.play();
+  videoRight.play();
+
+  stream = { left: leftStream, right: rightStream };
+  msg.textContent = "Estéreo REAL ativo";
+}
 
 let stream = null;
 let running = false;
@@ -133,28 +171,82 @@ const msg = document.getElementById('msg');
 const btnAr = document.getElementById('btn-ar');
 const btnExit = document.getElementById('btn-exit');
 
+// ---- Tenta listar câmeras e abrir duas traseiras ----
+async function tryStereoCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cams = devices.filter(d => d.kind === "videoinput");
+
+  // pega cams cujo label contém "back", "traseira", "rear"
+  const backCams = cams.filter(c =>
+    c.label.toLowerCase().includes("back") ||
+    c.label.toLowerCase().includes("traseira") ||
+    c.label.toLowerCase().includes("rear")
+  );
+
+  console.log("Câmeras traseiras encontradas:", backCams);
+
+  if (backCams.length < 2) {
+    msg.textContent = "Seu aparelho expôs menos de 2 câmeras traseiras.";
+    return null;
+  }
+
+  try {
+    const left = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: backCams[0].deviceId }
+    });
+
+    const right = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: backCams[1].deviceId }
+    });
+
+    msg.textContent = "Duas câmeras abertas com sucesso!";
+    return { left, right };
+  } catch (err) {
+    msg.textContent = "Erro ao abrir duas câmeras: " + err;
+    return null;
+  }
+}
+
 async function startAR(){
-  msg.textContent = 'Abrindo câmera…';
+  msg.textContent = 'Procurando câmeras duplas…';
+
+  // tenta abrir duas câmeras traseiras
+  const stereo = await tryStereoCameras();
+
+  if (stereo) {
+    // SE DEU CERTO — usa estereoscopia real
+    setupStereoVideos(stereo.left, stereo.right);
+    running = true;
+    try { await document.documentElement.requestFullscreen(); } catch(e){}
+    resizeAndLoop();
+    return;
+  }
+
+  // fallback para 1 câmera normal
+  msg.textContent = 'Duas câmeras não disponíveis. Abrindo câmera padrão…';
+
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: "environment" },
-        width: { ideal: 2560 }, 
+        width: { ideal: 2560 },
         height: { ideal: 1440 },
         frameRate: { ideal: 60 }
       },
       audio: false
     });
+
     video.srcObject = stream;
     await video.play();
     running = true;
-    msg.textContent = 'AR ativo';
+    msg.textContent = 'AR ativo (1 câmera)';
     try { await document.documentElement.requestFullscreen(); } catch(e){}
     resizeAndLoop();
   } catch(err){
     msg.textContent = 'Erro: ' + (err.message || err);
   }
 }
+
 
 function stopAll(){
   if(stream) stream.getTracks().forEach(t => t.stop());
@@ -184,12 +276,23 @@ function renderFrame(){
   if(!running) return;
   if(video.readyState < 2){ requestAnimationFrame(renderFrame); return; }
 
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  try {
+if (stream && stream.left && stream.right) {
+    // Upload left camera
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texLeft);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoLeft);
+
+    // Upload right camera
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, texRight);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoRight);
+} else {
+    // fallback para 1 câmera
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
-  } catch(e){
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, video.videoWidth, video.videoHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-  }
+}
+
 
   const w = canvas.width;
   const h = canvas.height;
@@ -208,7 +311,7 @@ function renderFrame(){
 
 const leftCenter  = 0.25;  // metade da metade esquerda
 const rightCenter = 0.75;  // metade da metade direita
-const ipd = 0.4;          // ajuste fino do alinhamento horizontal
+const ipd = 0.3;          // ajuste fino do alinhamento horizontal
 
 // ----- OLHO ESQUERDO -----
 gl.viewport(0, 0, eyeW, eyeH);
