@@ -65,12 +65,26 @@
             scene.add(light);
 
             // Giroscópio fallback (caso WebXR não esteja disponível)
-            window.addEventListener("deviceorientation", (event) => {
-                const alpha = event.alpha ? THREE.MathUtils.degToRad(event.alpha) : 0;
-                const beta  = event.beta  ? THREE.MathUtils.degToRad(event.beta)  : 0;
-                const gamma = event.gamma ? THREE.MathUtils.degToRad(event.gamma) : 0;
-                camera.rotation.set(beta, alpha, -gamma, "ZXY");
-            });
+const deviceQuat = new THREE.Quaternion();
+    const worldTransform = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+
+    window.addEventListener('deviceorientation', (event) => {
+        if (!event.alpha) return;
+
+        const alpha = THREE.MathUtils.degToRad(event.alpha);
+        const beta  = THREE.MathUtils.degToRad(event.beta);
+        const gamma = THREE.MathUtils.degToRad(event.gamma);
+
+        // Converte Euler (ZXY) para quaternion
+        const euler = new THREE.Euler(beta, alpha, -gamma, 'ZXY');
+        deviceQuat.setFromEuler(euler);
+
+        // Ajuste de alinhamento com o mundo
+        deviceQuat.multiply(worldTransform);
+
+        // Aplica à câmera
+        camera.quaternion.copy(deviceQuat);
+    });
 
             // Ajuste do tamanho
             window.addEventListener('resize', () => {
