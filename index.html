@@ -3,101 +3,34 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <title>Cardboard AR Simples</title>
+  <title>Cardboard AR com Fisheye</title>
 
   <style>
     html, body {
-      height: 100%;
-      margin: 0;
-      background: #000;
-      color: #fff;
-      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial;
-      overflow: hidden;
+      height: 100%; margin: 0; background: #000; overflow: hidden;
+      color: #fff; font-family: Inter, system-ui, sans-serif;
     }
 
-    #ui {
-      position: fixed;
-      left: 12px;
-      top: 12px;
-      z-index: 50;
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      background: rgba(0,0,0,0.25);
-      padding: 8px;
-      border-radius: 10px;
-    }
-
-    button {
-      font-size: 14px;
-      padding: 8px 10px;
-      border: 0;
-      border-radius: 8px;
-      background: #1e88e5;
-      color: white;
-      cursor: pointer;
-    }
-
-    button.secondary {
-      background: #455a64;
-    }
+    #ui { position: fixed; left:12px; top:12px; z-index:50; display:flex; gap:8px; }
+    button { padding:8px 10px; border:0; border-radius:8px; background:#1e88e5; color:white; cursor:pointer; }
+    button.secondary { background:#455a64; }
 
     #overlay {
-      position: fixed;
-      inset: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 40;
-      background: rgba(0,0,0,0.8);
-      gap: 12px;
-      flex-direction: column;
-      padding: 20px;
-      box-sizing: border-box;
+      position:fixed; inset:0; display:flex; flex-direction:column;
+      align-items:center; justify-content:center; gap:12px;
+      background:rgba(0,0,0,0.85); z-index:40;
     }
 
-    #stereo {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      flex-direction: row;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-    }
+    /* Stereo split */
+    #stereo { position:absolute; inset:0; display:none; flex-direction:row; }
+    .eye { width:50%; height:100%; overflow:hidden; position:relative; }
 
-    .eye {
-      width: 50%;
-      height: 100%;
-      overflow: hidden;
-      background: black;
-      position: relative;
-    }
+    canvas { position:absolute; inset:0; width:100%; height:100%; }
 
-    video {
-      position: absolute;
-      width: 100vw;
-      height: 100vh;
-      object-fit: cover;
-      left: 50%;
-      top: 50%;
-      transform: translate(-50%, -50%);
-    }
-
-    #msg {
-      position: fixed;
-      left: 12px;
-      bottom: 12px;
-      color: #ddd;
-      font-size: 13px;
-      z-index: 70;
-      background: rgba(0,0,0,0.35);
-      padding: 8px 10px;
-      border-radius: 8px;
-    }
+    #msg { position:fixed; left:12px; bottom:12px; background:rgba(0,0,0,0.35);
+           padding:8px 10px; border-radius:8px; font-size:13px; z-index:70; }
   </style>
 </head>
-
 <body>
 
   <div id="ui">
@@ -106,84 +39,154 @@
   </div>
 
   <div id="overlay">
-    <h1 style="margin:0">Cardboard AR Simples</h1>
-    <p style="max-width:420px; text-align:center; margin:0">
-      Esta é uma versão simples com visão estéreo da câmera para uso com Cardboard.
-    </p>
+    <h1>Cardboard AR + Fisheye</h1>
+    <p>Versão com distorção olho‑de‑peixe compatível com lentes do Cardboard.</p>
     <button id="start-ar">Iniciar AR</button>
   </div>
 
-  <div id="stereo" style="display:none">
-    <div class="eye">
-      <video id="videoL" autoplay playsinline></video>
-    </div>
-    <div class="eye">
-      <video id="videoR" autoplay playsinline></video>
-    </div>
+  <div id="stereo">
+    <div class="eye"><canvas id="cL"></canvas></div>
+    <div class="eye"><canvas id="cR"></canvas></div>
   </div>
 
   <div id="msg">Aguardando…</div>
 
-  <script>
-    const overlay = document.getElementById("overlay");
-    const stereo  = document.getElementById("stereo");
-    const msg     = document.getElementById("msg");
+<script>
+const overlay = document.getElementById("overlay");
+const stereo  = document.getElementById("stereo");
+const msg     = document.getElementById("msg");
+const btnAr   = document.getElementById("btn-ar");
+const btnExit = document.getElementById("btn-exit");
+const startAr = document.getElementById("start-ar");
 
-    const btnAr   = document.getElementById("btn-ar");
-    const btnExit = document.getElementById("btn-exit");
-    const startAr = document.getElementById("start-ar");
+let stream = null;
+let video = document.createElement("video");
+video.playsInline = true;
+video.autoplay = true;
 
-    let stream = null;
+// Canvas para processamento
+const cL = document.getElementById("cL");
+const cR = document.getElementById("cR");
+const ctxL = cL.getContext("2d");
+const ctxR = cR.getContext("2d");
 
-    async function startAR() {
-      overlay.style.display = "none";
-      stereo.style.display = "flex";
+// Shader Fisheye simples em JS
+// Shader Fisheye (Brown Model – compatível com Cardboard)
+function drawFisheye(ctx, canvas) {
+  const w = canvas.width;
+  const h = canvas.height;
 
-      msg.textContent = "Abrindo câmera…";
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const data = imgData.data;
 
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 }
-          },
-          audio: false
-        });
+  const cx = w / 2;
+  const cy = h / 2;
 
-        document.getElementById("videoL").srcObject = stream;
-        document.getElementById("videoR").srcObject = stream;
+  const maxR = Math.sqrt(cx*cx + cy*cy);
 
-        msg.textContent = "AR ativo";
-      } catch (err) {
-        msg.textContent = "Erro: " + err.message;
-        overlay.style.display = "";
+  const output = ctx.createImageData(w, h);
+  const out = output.data;
+
+  // Parâmetros típicos para Cardboard (barrel distortion)
+  const k1 = -0.34;   // negativo → barrel
+  const k2 = 0.55;
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+
+      const dx = x - cx;
+      const dy = y - cy;
+      const r = Math.sqrt(dx*dx + dy*dy);
+
+      const rNorm = r / maxR;
+      const factor = 1 + k1 * rNorm*rNorm + k2 * rNorm*rNorm*rNorm*rNorm;
+
+      const nr = r * factor;
+
+      const ratio = nr / (r || 1);
+
+      const sx = Math.round(cx + dx * ratio);
+      const sy = Math.round(cy + dy * ratio);
+
+      const i = (y*w + x)*4;
+
+      if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
+        const si = (sy*w + sx)*4;
+        out[i]   = data[si];
+        out[i+1] = data[si+1];
+        out[i+2] = data[si+2];
+        out[i+3] = 255;
       }
-
-      try {
-        await document.documentElement.requestFullscreen();
-      } catch(e) {}
     }
+  }
 
-    function stopAll() {
-      if (stream) {
-        stream.getTracks().forEach(t => t.stop());
-        stream = null;
-      }
+  ctx.putImageData(output, 0, 0);
+}
 
-      stereo.style.display = "none";
-      overlay.style.display = "";
-      msg.textContent = "Parado";
 
-      try { 
-        document.exitFullscreen(); 
-      } catch(e) {}
-    }
+function renderLoop() {
+  if (!stream) return;
 
-    startAr.addEventListener("click", startAR);
-    btnAr.addEventListener("click", startAR);
-    btnExit.addEventListener("click", stopAll);
-  </script>
+  const w = cL.clientWidth;
+  const h = cL.clientHeight;
 
+  cL.width = cR.width = w;
+  cL.height = cR.height = h;
+
+  // desenha vídeo
+  ctxL.drawImage(video, 0, 0, w, h);
+  ctxR.drawImage(video, 0, 0, w, h);
+
+  // aplica fisheye
+  drawFisheye(ctxL, cL, 0.55);
+  drawFisheye(ctxR, cR, 0.55);
+
+  requestAnimationFrame(renderLoop);
+}
+
+async function startAR() {
+  overlay.style.display = "none";
+  stereo.style.display = "flex";
+  msg.textContent = "Abrindo câmera…";
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode:{ ideal:"environment" }, width:{ ideal:1920 }, height:{ ideal:1080 } },
+      audio: false
+    });
+
+    video.srcObject = stream;
+
+    video.onloadedmetadata = () => {
+      video.play();
+      requestAnimationFrame(renderLoop);
+    };
+
+    msg.textContent = "AR ativo";
+  } catch (err) {
+    msg.textContent = "Erro: " + err.message;
+    overlay.style.display = "";
+  }
+
+  try { await document.documentElement.requestFullscreen(); } catch(e) {}
+}
+
+function stopAll() {
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
+
+  stereo.style.display = "none";
+  overlay.style.display = "";
+  msg.textContent = "Parado";
+
+  try { document.exitFullscreen(); } catch(e) {}
+}
+
+startAr.addEventListener("click", startAR);
+btnAr.addEventListener("click", startAR);
+btnExit.addEventListener("click", stopAll);
+</script>
 </body>
 </html>
