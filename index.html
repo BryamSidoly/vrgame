@@ -1,200 +1,262 @@
 <!doctype html>
 <html lang="pt-BR">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <title>Cardboard AR com Fisheye</title>
-
-  <style>
-    html, body {
-      height: 100%; margin: 0; background: #000; overflow: hidden;
-      color: #fff; font-family: Inter, system-ui, sans-serif;
-    }
-
-    #ui { position: fixed; left:12px; top:12px; z-index:50; display:flex; gap:8px; }
-    button { padding:8px 10px; border:0; border-radius:8px; background:#1e88e5; color:white; cursor:pointer; }
-    button.secondary { background:#455a64; }
-
-    #overlay {
-      position:fixed; inset:0; display:flex; flex-direction:column;
-      align-items:center; justify-content:center; gap:12px;
-      background:rgba(0,0,0,0.85); z-index:40;
-    }
-
-    /* Stereo split */
-    #stereo { position:absolute; inset:0; display:none; flex-direction:row; }
-    .eye { width:50%; height:100%; overflow:hidden; position:relative; }
-
-    canvas { position:absolute; inset:0; width:100%; height:100%; }
-
-    #msg { position:fixed; left:12px; bottom:12px; background:rgba(0,0,0,0.35);
-           padding:8px 10px; border-radius:8px; font-size:13px; z-index:70; }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>Cardboard WebGL Fisheye</title>
+<style>
+  html,body{height:100%;margin:0;background:#000;color:#fff;font-family:Inter,system-ui,sans-serif}
+  #ui{position:fixed;left:12px;top:12px;z-index:50;display:flex;gap:8px}
+  button{padding:8px 10px;border:0;border-radius:8px;background:#1e88e5;color:white;cursor:pointer}
+  button.secondary{background:#455a64}
+  #msg{position:fixed;left:12px;bottom:12px;background:rgba(0,0,0,0.35);padding:8px 10px;border-radius:8px;font-size:13px;z-index:70}
+  canvas{display:block;width:100vw;height:100vh}
+</style>
 </head>
 <body>
-
-  <div id="ui">
-    <button id="btn-ar">Iniciar AR</button>
-    <button id="btn-exit" class="secondary">Sair</button>
-  </div>
-
-  <div id="overlay">
-    <h1>Cardboard AR + Fisheye</h1>
-    <p>Versão com distorção olho‑de‑peixe compatível com lentes do Cardboard.</p>
-    <button id="start-ar">Iniciar AR</button>
-  </div>
-
-  <div id="stereo">
-    <div class="eye"><canvas id="cL"></canvas></div>
-    <div class="eye"><canvas id="cR"></canvas></div>
-  </div>
-
-  <div id="msg">Aguardando…</div>
+<div id="ui">
+  <button id="btn-ar">Iniciar AR</button>
+  <button id="btn-exit" class="secondary">Sair</button>
+</div>
+<div id="msg">Aguardando...</div>
+<canvas id="glcanvas"></canvas>
 
 <script>
-const overlay = document.getElementById("overlay");
-const stereo  = document.getElementById("stereo");
-const msg     = document.getElementById("msg");
-const btnAr   = document.getElementById("btn-ar");
-const btnExit = document.getElementById("btn-exit");
-const startAr = document.getElementById("start-ar");
+// ---- helpers GL ----
+function compileShader(gl, src, type){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    throw new Error('Shader compile error: ' + gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+function createProgram(gl, vsSrc, fsSrc){
+  const vs = compileShader(gl, vsSrc, gl.VERTEX_SHADER);
+  const fs = compileShader(gl, fsSrc, gl.FRAGMENT_SHADER);
+  const p = gl.createProgram();
+  gl.attachShader(p, vs);
+  gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p, gl.LINK_STATUS)){
+    throw new Error('Program link error: ' + gl.getProgramInfoLog(p));
+  }
+  return p;
+}
+
+// ---- Shaders ----
+const vertexSrc = `
+attribute vec2 a_pos;
+varying vec2 v_uv;
+void main(){
+  v_uv = a_pos * 0.5 + 0.5; // from [-1,1] to [0,1]
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}
+`;
+
+// Fragment shader: aplica barrel distortion (Brown model simplificado)
+const fragmentSrc = `
+precision mediump float;
+uniform sampler2D u_tex;
+uniform float u_k1;
+uniform float u_k2;
+uniform float u_aspect; // ratio = (width/height) of eye viewport
+uniform vec2 u_lensCenter; // center (0.5,0.5) typically
+varying vec2 v_uv;
+
+void main(){
+  // transform uv so center is (0,0) and scale for aspect
+vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
+  vec2 centered = uv - u_lensCenter;        // range roughly [-0.5,0.5]
+  centered.x *= u_aspect;                   // correct for non-square pixels
+  
+  float r = length(centered);
+  // radial distortion function (inverse mapping)
+  float factor = 1.0 + u_k1 * r * r + u_k2 * r * r * r * r;
+  vec2 distorted = centered * factor;
+  distorted.x /= u_aspect; // undo aspect scaling
+  vec2 finalUV = distorted + u_lensCenter;
+
+  // if outside texture, draw black
+  if(finalUV.x < 0.0 || finalUV.x > 1.0 || finalUV.y < 0.0 || finalUV.y > 1.0){
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+  } else {
+    gl_FragColor = texture2D(u_tex, finalUV);
+  }
+}
+`;
+
+// ---- Init GL & buffers ----
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl', { antialias: true }) || canvas.getContext('experimental-webgl');
+if(!gl) alert('WebGL não disponível.');
+
+const program = createProgram(gl, vertexSrc, fragmentSrc);
+gl.useProgram(program);
+
+// full-screen quad (two triangles) in clip space
+const quadVerts = new Float32Array([
+  -1, -1,
+   1, -1,
+  -1,  1,
+  -1,  1,
+   1, -1,
+   1,  1
+]);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+const a_pos = gl.getAttribLocation(program, 'a_pos');
+gl.enableVertexAttribArray(a_pos);
+gl.vertexAttribPointer(a_pos, 2, gl.FLOAT, false, 0, 0);
+
+// uniforms
+const u_tex = gl.getUniformLocation(program, 'u_tex');
+const u_k1  = gl.getUniformLocation(program, 'u_k1');
+const u_k2  = gl.getUniformLocation(program, 'u_k2');
+const u_aspect = gl.getUniformLocation(program, 'u_aspect');
+const u_lensCenter = gl.getUniformLocation(program, 'u_lensCenter');
+
+// create texture for video
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+// ---- video setup ----
+const video = document.createElement('video');
+video.autoplay = true;
+video.playsInline = true;
+video.muted = true;
 
 let stream = null;
-let video = document.createElement("video");
-video.playsInline = true;
-video.autoplay = true;
+let running = false;
 
-// Canvas para processamento
-const cL = document.getElementById("cL");
-const cR = document.getElementById("cR");
-const ctxL = cL.getContext("2d");
-const ctxR = cR.getContext("2d");
+const msg = document.getElementById('msg');
+const btnAr = document.getElementById('btn-ar');
+const btnExit = document.getElementById('btn-exit');
 
-// Shader Fisheye simples em JS
-// Shader Fisheye (Brown Model – compatível com Cardboard)
-function drawFisheye(ctx, canvas) {
-  const w = canvas.width;
-  const h = canvas.height;
-
-  const imgData = ctx.getImageData(0, 0, w, h);
-  const data = imgData.data;
-
-  const cx = w / 2;
-  const cy = h / 2;
-
-  const maxR = Math.sqrt(cx*cx + cy*cy);
-
-  const output = ctx.createImageData(w, h);
-  const out = output.data;
-
-  // Parâmetros típicos para Cardboard (barrel distortion)
-  const k1 = -0.34;   // negativo → barrel
-  const k2 = 0.55;
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-
-      const dx = x - cx;
-      const dy = y - cy;
-      const r = Math.sqrt(dx*dx + dy*dy);
-
-      const rNorm = r / maxR;
-      const factor = 1 + k1 * rNorm*rNorm + k2 * rNorm*rNorm*rNorm*rNorm;
-
-      const nr = r * factor;
-
-      const ratio = nr / (r || 1);
-
-      const sx = (cx + dx * ratio) | 0;
-const sy = (cy + dy * ratio) | 0;
-
-      const i = (y*w + x)*4;
-
-      if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
-        const si = (sy*w + sx)*4;
-        out[i]   = data[si];
-        out[i+1] = data[si+1];
-        out[i+2] = data[si+2];
-        out[i+3] = 255;
-      }
-    }
-  }
-
-  ctx.putImageData(output, 0, 0);
-}
-
-
-function renderLoop() {
-  if (!stream) return;
-
-  const w = cL.clientWidth;
-  const h = cL.clientHeight;
-
-  cL.width = cR.width = w;
-  cL.height = cR.height = h;
-
-  // desenha vídeo
-  ctxL.drawImage(video, 0, 0, w, h);
-  ctxR.drawImage(video, 0, 0, w, h);
-
-  // aplica fisheye
-  drawFisheye(ctxL, cL, 0.55);
-  drawFisheye(ctxR, cR, 0.55);
-
-  requestAnimationFrame(renderLoop);
-}
-
-async function startAR() {
-  overlay.style.display = "none";
-  stereo.style.display = "flex";
-  msg.textContent = "Abrindo câmera…";
-
+async function startAR(){
+  msg.textContent = 'Abrindo câmera…';
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-video: {
-  facingMode: { ideal: "environment" },
-  width:  { ideal: 2560 },
-  height: { ideal: 1440 },
-  frameRate: { ideal: 60 },
-  advanced: [
-    { noiseSuppression: false },
-    { echoCancellation: false }
-  ]
-},      audio: false
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 2560 }, // tenta alta resolução
+        height: { ideal: 1440 },
+        frameRate: { ideal: 60 }
+      },
+      audio: false
     });
-
     video.srcObject = stream;
-
-    video.onloadedmetadata = () => {
-      video.play();
-      requestAnimationFrame(renderLoop);
-    };
-
-    msg.textContent = "AR ativo";
-  } catch (err) {
-    msg.textContent = "Erro: " + err.message;
-    overlay.style.display = "";
+    await video.play();
+    running = true;
+    msg.textContent = 'AR ativo';
+    try { await document.documentElement.requestFullscreen(); } catch(e){}
+    resizeAndLoop();
+  } catch(err){
+    msg.textContent = 'Erro: ' + (err.message || err);
   }
-
-  try { await document.documentElement.requestFullscreen(); } catch(e) {}
 }
 
-function stopAll() {
-  if (stream) {
-    stream.getTracks().forEach(t => t.stop());
-    stream = null;
-  }
-
-  stereo.style.display = "none";
-  overlay.style.display = "";
-  msg.textContent = "Parado";
-
-  try { document.exitFullscreen(); } catch(e) {}
+function stopAll(){
+  if(stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+  running = false;
+  msg.textContent = 'Parado';
+  try { document.exitFullscreen(); } catch(e){}
 }
 
-startAr.addEventListener("click", startAR);
-btnAr.addEventListener("click", startAR);
-btnExit.addEventListener("click", stopAll);
+btnAr.addEventListener('click', startAR);
+btnExit.addEventListener('click', stopAll);
+
+// ---- render loop ----
+function resizeCanvasToDisplaySize(){
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.floor(window.innerWidth * dpr);
+  const height = Math.floor(window.innerHeight * dpr);
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+}
+
+// default distortion coefficients (ajuste para suas lentes)
+let K1 = -0.34;
+let K2 = 0.55;
+
+function renderFrame(){
+  if(!running) return;
+  if(video.readyState < 2){ requestAnimationFrame(renderFrame); return; }
+
+  // update texture from video
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  try {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+  } catch(e){
+    // some browsers require texImage2D with width/height when video not same origin
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, video.videoWidth, video.videoHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  }
+
+  // viewport: left eye
+  const w = canvas.width;
+  const h = canvas.height;
+  const eyeW = Math.floor(w / 2);
+  const eyeH = h;
+
+  // common GL state
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.viewport(0, 0, eyeW, eyeH);
+
+  // set uniforms for left eye
+  gl.uniform1i(u_tex, 0);
+  gl.uniform1f(u_k1, K1);
+  gl.uniform1f(u_k2, K2);
+
+  // aspect correction: because we map centered.x *= aspect where aspect = (width/height)
+  // For each eye, we use aspect = (eye_pixel_width / eye_pixel_height) * (video_height / video_width)
+  const videoAspect = (video.videoWidth && video.videoHeight) ? ( (eyeW/eyeH) * (video.videoHeight / video.videoWidth) ) : (eyeW/eyeH);
+  gl.uniform1f(u_aspect, videoAspect);
+
+  // lens centre in UV space (per-eye). Since we draw same texture to each eye, lensCenter = (0.5,0.5)
+  gl.uniform2f(u_lensCenter, 0.5, 0.5);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+  // right eye
+  gl.viewport(eyeW, 0, eyeW, eyeH);
+  // same uniforms suffice; could tweak lensCenter.x for IPD correction or small shift
+  // Optional small horizontal shift per eye to simulate IPD:
+  const ipdShift = 0.03; // ajuste para seu gosto (positive moves sampling slightly)
+  // for right eye shift to the right in UV
+  gl.uniform2f(u_lensCenter, 0.5 + ipdShift, 0.5);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+  requestAnimationFrame(renderFrame);
+}
+
+function resizeAndLoop(){
+  resizeCanvasToDisplaySize();
+  // adjust viewport resolution on devicePixelRatio changes
+  requestAnimationFrame(function loop(){
+    if(!running) return;
+    resizeCanvasToDisplaySize();
+    requestAnimationFrame(loop);
+  });
+  requestAnimationFrame(renderFrame);
+}
+
+// small UI to change K1/K2 at runtime (browser console)
+window.setDistortion = (k1,k2) => { K1 = k1; K2 = k2; console.log('k1,k2 =',k1,k2); };
+
+// helpful message
+console.log('Iniciar: clique "Iniciar AR". Para ajustar distorção em runtime use setDistortion(k1,k2) no console. Ex.: setDistortion(-0.34,0.55)');
+
 </script>
 </body>
 </html>
