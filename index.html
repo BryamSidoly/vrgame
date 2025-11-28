@@ -57,32 +57,45 @@ void main(){
 
 const fragmentSrc = `
 precision mediump float;
-uniform sampler2D u_tex;
+
+uniform sampler2D u_texLeft;
+uniform sampler2D u_texRight;
+
 uniform float u_k1;
 uniform float u_k2;
-uniform float u_aspect; // ratio = (width/height) of eye viewport
-uniform vec2 u_lensCenter; // center (0.5,0.5) typically
+uniform float u_aspect;
+uniform vec2  u_lensCenter;
+uniform int   u_eye;   // 0 = left, 1 = right
+
 varying vec2 v_uv;
 
 void main(){
-  // transform uv so center is (0,0) and scale for aspect
-vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
-  vec2 centered = uv - u_lensCenter;        // range roughly [-0.5,0.5]
-  centered.x *= u_aspect;                   // correct for non-square pixels
-  
-  float r = length(centered);
-  // radial distortion function (inverse mapping)
-  float factor = 1.0 + u_k1 * r * r + u_k2 * r * r * r * r;
-  vec2 distorted = centered * factor;
-  distorted.x /= u_aspect; // undo aspect scaling
-  vec2 finalUV = distorted + u_lensCenter;
+    // Coordenadas (corrigindo flip vertical)
+    vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
 
-  // if outside texture, draw black
-  if(finalUV.x < 0.0 || finalUV.x > 1.0 || finalUV.y < 0.0 || finalUV.y > 1.0){
-    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-  } else {
-    gl_FragColor = texture2D(u_tex, finalUV);
-  }
+    vec2 centered = uv - u_lensCenter;
+    centered.x *= u_aspect;
+
+    float r = length(centered);
+    float factor = 1.0 + u_k1 * r*r + u_k2 * r*r*r*r;
+
+    vec2 distorted = centered * factor;
+    distorted.x /= u_aspect;
+    vec2 finalUV = distorted + u_lensCenter;
+
+    if(finalUV.x < 0.0 || finalUV.x > 1.0 ||
+       finalUV.y < 0.0 || finalUV.y > 1.0){
+        gl_FragColor = vec4(0.0,0.0,0.0,1.0);
+        return;
+    }
+
+    vec4 c;
+    if(u_eye == 0) {
+        c = texture2D(u_texLeft, finalUV);
+    } else {
+        c = texture2D(u_texRight, finalUV);
+    }
+    gl_FragColor = c;
 }
 `;
 
@@ -92,6 +105,8 @@ if(!gl) alert('WebGL não disponível.');
 
 const program = createProgram(gl, vertexSrc, fragmentSrc);
 gl.useProgram(program);
+gl.uniform1i(u_texLeft, 0);
+gl.uniform1i(u_texRight, 1);
 
 const quadVerts = new Float32Array([
   -1, -1,
@@ -113,6 +128,10 @@ const u_k1  = gl.getUniformLocation(program, 'u_k1');
 const u_k2  = gl.getUniformLocation(program, 'u_k2');
 const u_aspect = gl.getUniformLocation(program, 'u_aspect');
 const u_lensCenter = gl.getUniformLocation(program, 'u_lensCenter');
+const u_texLeft  = gl.getUniformLocation(program, 'u_texLeft');
+const u_texRight = gl.getUniformLocation(program, 'u_texRight');
+const u_eye      = gl.getUniformLocation(program, 'u_eye');
+
 
 const tex = gl.createTexture();
 gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -277,16 +296,17 @@ function renderFrame(){
   if(video.readyState < 2){ requestAnimationFrame(renderFrame); return; }
 
 if (stream && stream.left && stream.right) {
-    // Upload left camera
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, texLeft);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoLeft);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,
+                  gl.UNSIGNED_BYTE, videoLeft);
 
-    // Upload right camera
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, texRight);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoRight);
-} else {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,
+                  gl.UNSIGNED_BYTE, videoRight);
+}
+ else {
     // fallback para 1 câmera
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -313,14 +333,16 @@ const leftCenter  = 0.25;  // metade da metade esquerda
 const rightCenter = 0.75;  // metade da metade direita
 const ipd = 0.3;          // ajuste fino do alinhamento horizontal
 
-// ----- OLHO ESQUERDO -----
+// ---- LEFT EYE ----
 gl.viewport(0, 0, eyeW, eyeH);
+gl.uniform1i(u_eye, 0);
 gl.uniform1f(u_aspect, videoAspect);
 gl.uniform2f(u_lensCenter, leftCenter + ipd, 0.5);
 gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-// ----- OLHO DIREITO -----
+// ---- RIGHT EYE ----
 gl.viewport(eyeW, 0, eyeW, eyeH);
+gl.uniform1i(u_eye, 1);
 gl.uniform1f(u_aspect, videoAspect);
 gl.uniform2f(u_lensCenter, rightCenter - ipd, 0.5);
 gl.drawArrays(gl.TRIANGLES, 0, 6);
