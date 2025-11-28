@@ -116,12 +116,12 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.xr.enabled = true;
       renderer.xr.addEventListener('sessionstart', () => {
-        const xrCamera = renderer.xr.getCamera(camera); // retorna a câmera VR
-        xrCamera.cameras[0].position.x -= 0.03; // afasta olho esquerdo
-        xrCamera.cameras[1].position.x += 0.03; // afasta olho direito
+        const xrCamera = renderer.xr.getCamera(camera); 
+        xrCamera.cameras[0].position.x -= 0.03;
+        xrCamera.cameras[1].position.x += 0.03;
       });
-      document.body.appendChild(renderer.domElement);
 
+      document.body.appendChild(renderer.domElement);
       document.body.appendChild(VRButton.createButton(renderer));
 
       const light = new THREE.HemisphereLight(0xffffff, 0x444444);
