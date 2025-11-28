@@ -53,27 +53,27 @@
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.module.js';
     import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/webxr/VRButton.js';
 
-document.getElementById('startCamera').addEventListener('click', () => {
-  const video = document.createElement('video');
-  video.autoplay = true;
-  video.muted = true;
-  video.playsInline = true;
+    document.getElementById('startCamera').addEventListener('click', () => {
+      const video = document.createElement('video');
+      video.autoplay = true;
+      video.muted = true;
+      video.playsInline = true;
 
-  navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
-    .then(stream => {
-      video.srcObject = stream;
-      video.play();
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
+        .then(stream => {
+          video.srcObject = stream;
+          video.play();
 
-      const videoTexture = new THREE.VideoTexture(video);
-      scene.background = videoTexture;
+          const videoTexture = new THREE.VideoTexture(video);
+          scene.background = videoTexture;
 
-      // Esconde o botão depois de ativar a câmera
-      document.getElementById('startCamera').style.display = 'none';
-    })
-    .catch(err => {
-      console.warn("Não foi possível acessar a câmera:", err);
+          // Esconde o botão depois de ativar a câmera
+          document.getElementById('startCamera').style.display = 'none';
+        })
+        .catch(err => {
+          console.warn("Não foi possível acessar a câmera:", err);
+        });
     });
-});
 
     let camera, scene, renderer;
     let cubes = [];
@@ -115,6 +115,11 @@ document.getElementById('startCamera').addEventListener('click', () => {
       renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.xr.enabled = true;
+      renderer.xr.addEventListener('sessionstart', () => {
+        const xrCamera = renderer.xr.getCamera(camera); // retorna a câmera VR
+        xrCamera.cameras[0].position.x -= 0.03; // afasta olho esquerdo
+        xrCamera.cameras[1].position.x += 0.03; // afasta olho direito
+      });
       document.body.appendChild(renderer.domElement);
 
       document.body.appendChild(VRButton.createButton(renderer));
